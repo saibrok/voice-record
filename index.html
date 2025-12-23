@@ -11,10 +11,7 @@
 
   <body>
     <div class="wrap">
-      <h1>
-        Запись аудио в браузере (без бэкенда): выбор устройства, визуализация, базовое редактирование (trim/cut),
-        экспорт WAV
-      </h1>
+      <h1>Запись аудио</h1>
 
       <div class="grid">
         <section class="card">
@@ -112,11 +109,22 @@
                 </div>
               </div>
               <div class="field">
-                <label for="mime">Кодек записи</label>
+                <label for="recordMode">Режим записи</label>
+                <select id="recordMode">
+                  <option
+                    value="pcm"
+                    selected
+                  >
+                    PCM/WAV (без сжатия)
+                  </option>
+                  <option value="compressed">Сжатая (MediaRecorder)</option>
+                </select>
+                <div class="hint">PCM даёт максимальное качество, но занимает больше памяти.</div>
+              </div>
+              <div class="field">
+                <label for="mime">Кодек (только для MediaRecorder)</label>
                 <select id="mime"></select>
-                <div class="hint">
-                  Запись идёт в поддерживаемый браузером формат (часто Opus), затем можно экспортировать в WAV (PCM).
-                </div>
+                <div class="hint">Для сравнения качества можно выбрать Opus/OGG/WebM.</div>
               </div>
             </div>
 
@@ -254,7 +262,7 @@
         <ul>
           <li>Микрофон/предусилитель/комната влияют сильнее всего.</li>
           <li>Для диктора обычно: Mono, 48 kHz, EC/NS/AGC выключены, пик громкости около -6 dBFS (без клиппинга).</li>
-          <li>Браузер пишет через MediaRecorder (часто Opus). Экспорт WAV здесь делает PCM 16-bit.</li>
+          <li>PCM — без сжатия. MediaRecorder — сжатые кодеки (например, Opus).</li>
         </ul>
       </div>
     </div>

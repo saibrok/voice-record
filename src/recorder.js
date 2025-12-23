@@ -13,6 +13,7 @@ export function setupRecorder() {
     ec: document.getElementById('ec'),
     ns: document.getElementById('ns'),
     agc: document.getElementById('agc'),
+    recordMode: document.getElementById('recordMode'),
     mime: document.getElementById('mime'),
     btnInit: document.getElementById('btnInit'),
     btnDisable: document.getElementById('btnDisable'),
@@ -35,18 +36,33 @@ export function setupRecorder() {
     log: document.getElementById('log'),
   };
 
+  const MODE_PCM = 'pcm';
+  const MODE_COMPRESSED = 'compressed';
+
   // ---------- Состояние ----------
   let stream = null;
-  let mediaRecorder = null;
-  let recordedChunks = [];
   let audioCtx = null;
   let sourceNode = null;
   let analyser = null;
   let rafId = null;
 
+  let workletNode = null;
+  let workletGain = null;
+  let workletReady = false;
+  let workletConnected = false;
+
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let skipDecodeOnStop = false;
+
+  let pcmRecording = false;
+  let discardOnStop = false;
+  let pcmChunks = [];
+  let pcmFormat = null;
+  let totalFrames = 0;
+
   let decodedBuffer = null; // AudioBuffer для редактирования/экспорта
   let playbackUrl = null;
-  let skipDecodeOnStop = false;
 
   // ---------- Утилиты ----------
   const log = (s) => {
@@ -91,6 +107,42 @@ export function setupRecorder() {
     }
     // Если ничего не найдено, оставляем пустую опцию (по умолчанию браузера)
     return supported.length ? supported : [''];
+  }
+
+  function populateMime() {
+    const supported = getSupportedMimes();
+    els.mime.innerHTML = '';
+    const preferred = 'audio/webm;codecs=opus';
+    supported.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m ? m : '(по умолчанию браузера)';
+      els.mime.appendChild(opt);
+    });
+    if (supported.includes(preferred)) {
+      els.mime.value = preferred;
+    }
+  }
+
+  function updateModeUI() {
+    hideCompat();
+    const mode = els.recordMode.value;
+    const canPcm = 'AudioWorkletNode' in window;
+    const canCompressed = 'MediaRecorder' in window;
+
+    if (mode === MODE_PCM) {
+      els.mime.disabled = true;
+      if (!canPcm) {
+        showCompat('bad', 'AudioWorklet не поддерживается в этом браузере.');
+      }
+      return;
+    }
+
+    els.mime.disabled = false;
+    populateMime();
+    if (!canCompressed) {
+      showCompat('bad', 'MediaRecorder не поддерживается в этом браузере.');
+    }
   }
 
   async function refreshDevices() {
@@ -263,12 +315,20 @@ export function setupRecorder() {
     ctx.fillRect(0, 0, els.scope.width, els.scope.height);
   }
 
-  function setButtons({ initReady = false, canRecord = false, isRecording = false, hasClip = false }) {
+  function resetPcmState() {
+    pcmChunks = [];
+    pcmFormat = null;
+    totalFrames = 0;
+  }
+
+  function setButtons({ canRecord = false, isRecording = false, hasClip = false }) {
     els.btnInit.disabled = false;
     els.btnDisable.disabled = !canRecord;
     els.btnStart.disabled = !(canRecord && !isRecording);
     els.btnStop.disabled = !isRecording;
     els.btnClear.disabled = !(canRecord || hasClip);
+    els.recordMode.disabled = isRecording;
+    els.mime.disabled = isRecording || els.recordMode.value !== MODE_COMPRESSED;
 
     els.inPoint.disabled = !hasClip;
     els.outPoint.disabled = !hasClip;
@@ -279,9 +339,12 @@ export function setupRecorder() {
 
   async function disableMic() {
     hideCompat();
+    if (pcmRecording) {
+      stopRecording({ discard: true });
+    }
     if (mediaRecorder && mediaRecorder.state === 'recording') {
+      skipDecodeOnStop = true;
       try {
-        skipDecodeOnStop = true;
         mediaRecorder.stop();
       } catch {}
     }
@@ -297,25 +360,71 @@ export function setupRecorder() {
       } catch {}
       audioCtx = null;
     }
+    workletNode = null;
+    workletGain = null;
+    workletReady = false;
+    workletConnected = false;
     resetEditedState();
+    resetPcmState();
     setStatus('не инициализировано');
     setButtons({ canRecord: false, isRecording: false, hasClip: false });
   }
 
-  // ---------- Инициализация: список кодеков ----------
-  function populateMime() {
-    const supported = getSupportedMimes();
-    els.mime.innerHTML = '';
-    const preferred = 'audio/webm;codecs=opus';
-    supported.forEach((m) => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m ? m : '(по умолчанию браузера)';
-      els.mime.appendChild(opt);
-    });
-    if (supported.includes(preferred)) {
-      els.mime.value = preferred;
+  function handleWorkletMessage(event) {
+    const msg = event.data;
+    if (!msg) return;
+
+    if (msg.type === 'format') {
+      pcmFormat = {
+        sampleRate: msg.sampleRate,
+        channelCount: msg.channelCount,
+      };
+      pcmChunks = Array.from({ length: msg.channelCount }, () => []);
+      return;
     }
+
+    if (msg.type === 'data' && pcmRecording) {
+      if (!pcmFormat) {
+        pcmFormat = {
+          sampleRate: msg.sampleRate,
+          channelCount: msg.chunk.length,
+        };
+        pcmChunks = Array.from({ length: pcmFormat.channelCount }, () => []);
+      }
+
+      for (let c = 0; c < msg.chunk.length; c++) {
+        pcmChunks[c].push(msg.chunk[c]);
+      }
+      totalFrames += msg.chunk[0]?.length || 0;
+    }
+  }
+
+  async function ensureWorkletNode() {
+    if (!audioCtx) throw new Error('AudioContext не инициализирован');
+    if (workletReady) return;
+
+    if (!audioCtx.audioWorklet) {
+      throw new Error('AudioWorklet не поддерживается');
+    }
+
+    await audioCtx.audioWorklet.addModule(new URL('./worklets/pcm-processor.js', import.meta.url));
+    workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+    });
+    workletNode.port.onmessage = handleWorkletMessage;
+
+    workletGain = audioCtx.createGain();
+    workletGain.gain.value = 0;
+    workletNode.connect(workletGain).connect(audioCtx.destination);
+
+    workletReady = true;
+  }
+
+  function connectWorkletIfNeeded() {
+    if (!sourceNode || !workletNode || workletConnected) return;
+    sourceNode.connect(workletNode);
+    workletConnected = true;
   }
 
   async function getUserMediaWithFallback(constraints) {
@@ -333,6 +442,30 @@ export function setupRecorder() {
     }
   }
 
+  function applyClipBuffer(buffer) {
+    decodedBuffer = buffer;
+
+    const dur = decodedBuffer.duration;
+    els.inPoint.max = String(dur);
+    els.outPoint.max = String(dur);
+    els.inPoint.value = '0';
+    els.outPoint.value = String(dur);
+
+    els.sr.textContent = String(decodedBuffer.sampleRate);
+    els.ch.textContent = String(decodedBuffer.numberOfChannels);
+    els.dur.textContent = formatSec(dur);
+
+    els.vizMode.textContent = 'static';
+    updateInOutUI();
+
+    playbackUrl = buildWavUrlFromBuffer(decodedBuffer, playbackUrl);
+    els.player.src = playbackUrl;
+    els.player.style.display = 'block';
+
+    setStatus('готово (клип загружен)');
+    setButtons({ canRecord: true, isRecording: false, hasClip: true });
+  }
+
   // ---------- Инициализация микрофона ----------
   async function initMic() {
     hideCompat();
@@ -344,10 +477,17 @@ export function setupRecorder() {
       );
       return;
     }
-    if (!('MediaRecorder' in window)) {
-      showCompat('bad', 'MediaRecorder не поддерживается. В этом варианте страницы запись невозможна.');
-      return;
+
+    if (pcmRecording) {
+      stopRecording({ discard: true });
     }
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      skipDecodeOnStop = true;
+      try {
+        mediaRecorder.stop();
+      } catch {}
+    }
+    mediaRecorder = null;
 
     // Останавливаем старый поток
     if (stream) {
@@ -361,7 +501,12 @@ export function setupRecorder() {
       } catch {}
       audioCtx = null;
     }
+    workletNode = null;
+    workletGain = null;
+    workletReady = false;
+    workletConnected = false;
     resetEditedState();
+    resetPcmState();
 
     const deviceId = els.deviceSelect.value || undefined;
     const preferSR = els.preferSR.value ? Number(els.preferSR.value) : undefined;
@@ -391,19 +536,31 @@ export function setupRecorder() {
         const settings = track?.getSettings?.();
         const actualSR = settings?.sampleRate;
         if (actualSR && actualSR !== preferSR) {
-          showCompat('warn', `Запрошенная частота ${preferSR} Hz не поддерживается. Используется ${actualSR} Hz.`);
+          showCompat(
+            'warn',
+            `Запрошенная частота ${preferSR} Hz не применена. Скорее всего в ОС задана другая частота, фактическая запись будет ${actualSR} Hz.`,
+          );
         }
       }
 
-      // Контекст для живой визуализации
+      // Контекст для визуализации и PCM-режима
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       sourceNode = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
       sourceNode.connect(analyser);
 
+      if (els.recordMode.value === MODE_PCM) {
+        await ensureWorkletNode();
+        connectWorkletIfNeeded();
+      }
+
+      const track = stream.getAudioTracks()[0];
+      const settings = track?.getSettings?.();
+      const actualChannels = settings?.channelCount || channelCount;
+
       els.sr.textContent = String(audioCtx.sampleRate);
-      els.ch.textContent = String(channelCount);
+      els.ch.textContent = String(actualChannels);
 
       setStatus('готово');
       els.vizMode.textContent = 'live';
@@ -416,15 +573,39 @@ export function setupRecorder() {
     } catch (e) {
       console.error(e);
       setStatus('ошибка');
-      showCompat('bad', 'Не удалось получить доступ к микрофону. Проверь разрешения браузера и выбранное устройство.');
+      showCompat('bad', 'Не удалось получить доступ к микрофону или инициализировать запись.');
       log(e?.message || String(e));
       setButtons({ canRecord: false, isRecording: false, hasClip: false });
     }
   }
 
   // ---------- Запись ----------
-  function startRecording() {
+  async function startRecording() {
     if (!stream) return;
+
+    const mode = els.recordMode.value;
+
+    if (mode === MODE_PCM) {
+      if (!audioCtx) return;
+      try {
+        await ensureWorkletNode();
+        connectWorkletIfNeeded();
+      } catch (e) {
+        showCompat('bad', 'AudioWorklet недоступен. Переключись на сжатую запись.');
+        log(e?.message || String(e));
+        return;
+      }
+
+      resetPcmState();
+      pcmRecording = true;
+      discardOnStop = false;
+      workletNode.port.postMessage({ type: 'recording', enabled: true });
+
+      setStatus('запись…');
+      setButtons({ canRecord: true, isRecording: true, hasClip: false });
+      els.vizMode.textContent = 'live';
+      return;
+    }
 
     recordedChunks = [];
     const mimeType = els.mime.value || undefined;
@@ -468,35 +649,14 @@ export function setupRecorder() {
       const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
 
       try {
-        decodedBuffer = await decodeRecordedBlob(blob);
-
-        // Подготовка интерфейса для редактирования
-        const dur = decodedBuffer.duration;
-        els.inPoint.max = String(dur);
-        els.outPoint.max = String(dur);
-        els.inPoint.value = '0';
-        els.outPoint.value = String(dur);
-
-        els.sr.textContent = String(decodedBuffer.sampleRate);
-        els.ch.textContent = String(decodedBuffer.numberOfChannels);
-        els.dur.textContent = formatSec(dur);
-
-        els.vizMode.textContent = 'static';
-        updateInOutUI();
-
-        playbackUrl = buildWavUrlFromBuffer(decodedBuffer, playbackUrl);
-        els.player.src = playbackUrl;
-        els.player.style.display = 'block';
-
-        setStatus('готово (клип загружен)');
-        setButtons({ canRecord: true, isRecording: false, hasClip: true });
+        const buffer = await decodeRecordedBlob(blob);
+        applyClipBuffer(buffer);
       } catch (e) {
         console.error(e);
         setStatus('ошибка');
-        showCompat('bad', 'Не удалось декодировать запись для редактирования. Попробуй другой кодек или другой браузер.');
+        showCompat('bad', 'Не удалось декодировать запись для редактирования. Попробуй другой кодек.');
         log(e?.message || String(e));
         setButtons({ canRecord: true, isRecording: false, hasClip: false });
-        // Восстанавливаем живую визуализацию
         if (analyser) drawLive();
       }
     };
@@ -510,7 +670,53 @@ export function setupRecorder() {
     }
   }
 
-  function stopRecording() {
+  function finalizePcmRecording() {
+    if (!pcmFormat || totalFrames === 0) {
+      showCompat('warn', 'Запись пуста. Проверь микрофон и уровень сигнала.');
+      setStatus('готово');
+      setButtons({ canRecord: true, isRecording: false, hasClip: false });
+      if (analyser) drawLive();
+      return;
+    }
+
+    const buffer = audioCtx.createBuffer(pcmFormat.channelCount, totalFrames, pcmFormat.sampleRate);
+    for (let c = 0; c < pcmFormat.channelCount; c++) {
+      const channelData = buffer.getChannelData(c);
+      let offset = 0;
+      for (const chunk of pcmChunks[c]) {
+        channelData.set(chunk, offset);
+        offset += chunk.length;
+      }
+    }
+
+    applyClipBuffer(buffer);
+  }
+
+  function stopRecording({ discard = false } = {}) {
+    const mode = els.recordMode.value;
+
+    if (mode === MODE_PCM) {
+      if (!pcmRecording) return;
+      pcmRecording = false;
+      discardOnStop = discard;
+      workletNode?.port.postMessage({ type: 'recording', enabled: false });
+
+      if (discardOnStop) {
+        discardOnStop = false;
+        resetPcmState();
+        setStatus(stream ? 'готово' : 'не инициализировано');
+        setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
+        if (analyser) drawLive();
+        return;
+      }
+
+      setStatus('обработка…');
+      setButtons({ canRecord: true, isRecording: false, hasClip: false });
+      stopLiveViz();
+      finalizePcmRecording();
+      return;
+    }
+
     if (!mediaRecorder) return;
     if (mediaRecorder.state === 'recording') mediaRecorder.stop();
   }
@@ -590,25 +796,34 @@ export function setupRecorder() {
   }
 
   // ---------- Привязка интерфейса ----------
-  populateMime();
+  updateModeUI();
 
   // Первичный список устройств (названия могут быть пустыми до разрешения)
   if (navigator.mediaDevices?.enumerateDevices) {
     refreshDevices().catch(() => {});
   }
 
+  els.recordMode.addEventListener('change', () => {
+    updateModeUI();
+  });
+
   els.btnInit.addEventListener('click', initMic);
   els.btnDisable.addEventListener('click', disableMic);
-  els.btnStart.addEventListener('click', startRecording);
-  els.btnStop.addEventListener('click', stopRecording);
+  els.btnStart.addEventListener('click', () => {
+    startRecording();
+  });
+  els.btnStop.addEventListener('click', () => stopRecording());
 
   els.btnClear.addEventListener('click', async () => {
     hideCompat();
     resetEditedState();
-    recordedChunks = [];
+    resetPcmState();
+    if (pcmRecording) {
+      stopRecording({ discard: true });
+    }
     if (mediaRecorder && mediaRecorder.state === 'recording') {
+      skipDecodeOnStop = true;
       try {
-        skipDecodeOnStop = true;
         mediaRecorder.stop();
       } catch {}
     }
@@ -659,8 +874,8 @@ export function setupRecorder() {
   });
 
   // Подсказки совместимости
-  if (!('MediaRecorder' in window)) {
-    showCompat('bad', 'MediaRecorder не поддерживается в этом браузере. Попробуй Chrome/Edge/Firefox.');
+  if (!('AudioWorkletNode' in window) && !('MediaRecorder' in window)) {
+    showCompat('bad', 'Этот браузер не поддерживает AudioWorklet и MediaRecorder.');
     setStatus('несовместимо');
   } else {
     setStatus('не инициализировано');
