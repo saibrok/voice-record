@@ -13,7 +13,6 @@
       </div>
     </div>
 
-    <RecorderNotes />
   </div>
 </template>
 
@@ -23,7 +22,6 @@ import { setupRecorder } from './utils/recorder.js';
 import RecorderModule from './modules/RecorderModule.vue';
 import LiveModule from './modules/LiveModule.vue';
 import EditorModule from './modules/EditorModule.vue';
-import RecorderNotes from './components/RecorderNotes.vue';
 
 onMounted(() => {
   setupRecorder();

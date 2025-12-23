@@ -82,6 +82,7 @@ export function setupRecorder() {
   let pcmChunks = [];
   let pcmFormat = null;
   let totalFrames = 0;
+  let appendBaseBuffer = null;
 
   let decodedBuffer = null; // AudioBuffer для редактирования/экспорта
   let selection = { has: false, start: 0, end: 0 };
@@ -784,6 +785,10 @@ export function setupRecorder() {
     els.btnPlay.disabled = !hasClip;
     els.btnExportWav.disabled = !hasClip;
     els.btnDelete.disabled = !hasSelection || isRecording;
+
+    if (els.btnStart) {
+      els.btnStart.textContent = hasClip && !isRecording ? 'Продолжить запись' : 'Начать запись';
+    }
   }
 
   async function disableMic() {
@@ -1061,7 +1066,10 @@ export function setupRecorder() {
     if (!stream) return;
     if (isPlaying) stopPlayback(false);
     if (decodedBuffer) {
+      appendBaseBuffer = decodedBuffer;
       resetEditedState();
+    } else {
+      appendBaseBuffer = null;
     }
 
     if (!audioCtx) return;
@@ -1095,9 +1103,9 @@ export function setupRecorder() {
       return;
     }
 
-    const buffer = audioCtx.createBuffer(pcmFormat.channelCount, totalFrames, pcmFormat.sampleRate);
+    const newBuffer = audioCtx.createBuffer(pcmFormat.channelCount, totalFrames, pcmFormat.sampleRate);
     for (let c = 0; c < pcmFormat.channelCount; c++) {
-      const channelData = buffer.getChannelData(c);
+      const channelData = newBuffer.getChannelData(c);
       let offset = 0;
       for (const chunk of pcmChunks[c]) {
         channelData.set(chunk, offset);
@@ -1105,7 +1113,36 @@ export function setupRecorder() {
       }
     }
 
-    applyClipBuffer(buffer);
+    if (appendBaseBuffer) {
+      if (
+        appendBaseBuffer.numberOfChannels === newBuffer.numberOfChannels &&
+        appendBaseBuffer.sampleRate === newBuffer.sampleRate
+      ) {
+        const merged = concatAudioBuffers(appendBaseBuffer, newBuffer);
+        appendBaseBuffer = null;
+        applyClipBuffer(merged);
+        return;
+      }
+      showCompat(
+        'warn',
+        'Нельзя продолжить запись: отличаются каналы или частота. Создан новый клип.',
+      );
+      appendBaseBuffer = null;
+    }
+
+    applyClipBuffer(newBuffer);
+  }
+
+  function concatAudioBuffers(a, b) {
+    const numCh = a.numberOfChannels;
+    const totalLength = a.length + b.length;
+    const out = audioCtx.createBuffer(numCh, totalLength, a.sampleRate);
+    for (let c = 0; c < numCh; c++) {
+      const dst = out.getChannelData(c);
+      dst.set(a.getChannelData(c), 0);
+      dst.set(b.getChannelData(c), a.length);
+    }
+    return out;
   }
 
   function stopRecording({ discard = false } = {}) {
@@ -1296,7 +1333,7 @@ export function setupRecorder() {
     const a = range ? range[0] : 0;
     const b = range ? range[1] : decodedBuffer.duration;
 
-    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b });
+    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b, bitsPerSample: 24 });
     const ts = new Date().toISOString().replaceAll(':', '-').slice(0, 19);
     const filename = `recording_${ts}_${Math.round((b - a) * 100) / 100}s.wav`;
 

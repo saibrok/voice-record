@@ -9,6 +9,19 @@ function floatTo16BitPCM(float32) {
   return out;
 }
 
+function floatTo24BitPCM(float32) {
+  const out = new Uint8Array(float32.length * 3);
+  let offset = 0;
+  for (let i = 0; i < float32.length; i++) {
+    const s = clamp(float32[i], -1, 1);
+    const v = s < 0 ? Math.round(s * 0x800000) : Math.round(s * 0x7fffff);
+    out[offset++] = v & 0xff;
+    out[offset++] = (v >> 8) & 0xff;
+    out[offset++] = (v >> 16) & 0xff;
+  }
+  return out;
+}
+
 function writeWavHeader(view, { numChannels, sampleRate, bitsPerSample, dataByteLength }) {
   const blockAlign = (numChannels * bitsPerSample) / 8;
   const byteRate = sampleRate * blockAlign;
@@ -42,7 +55,7 @@ function writeWavHeader(view, { numChannels, sampleRate, bitsPerSample, dataByte
   u32(dataByteLength);
 }
 
-export function encodeWavFromAudioBuffer(audioBuffer, { inSec, outSec } = {}) {
+export function encodeWavFromAudioBuffer(audioBuffer, { inSec, outSec, bitsPerSample = 16 } = {}) {
   const sr = audioBuffer.sampleRate;
   const numCh = audioBuffer.numberOfChannels;
 
@@ -68,21 +81,25 @@ export function encodeWavFromAudioBuffer(audioBuffer, { inSec, outSec } = {}) {
     }
   }
 
-  const pcm16 = floatTo16BitPCM(trimmed);
-  const dataBytes = pcm16.byteLength;
+  const use24 = bitsPerSample === 24;
+  const pcmData = use24 ? floatTo24BitPCM(trimmed) : floatTo16BitPCM(trimmed);
+  const dataBytes = pcmData.byteLength;
   const buffer = new ArrayBuffer(44 + dataBytes);
   const view = new DataView(buffer);
-  writeWavHeader(view, { numChannels: numCh, sampleRate: sr, bitsPerSample: 16, dataByteLength: dataBytes });
+  writeWavHeader(view, {
+    numChannels: numCh,
+    sampleRate: sr,
+    bitsPerSample: use24 ? 24 : 16,
+    dataByteLength: dataBytes,
+  });
 
   // Записываем PCM
-  let offset = 44;
-  for (let i = 0; i < pcm16.length; i++, offset += 2) view.setInt16(offset, pcm16[i], true);
+  if (use24) {
+    new Uint8Array(buffer, 44).set(pcmData);
+  } else {
+    let offset = 44;
+    for (let i = 0; i < pcmData.length; i++, offset += 2) view.setInt16(offset, pcmData[i], true);
+  }
 
   return new Blob([buffer], { type: 'audio/wav' });
-}
-
-export function buildWavUrlFromBuffer(buffer, previousUrl, { inSec = 0, outSec = buffer.duration } = {}) {
-  const wav = encodeWavFromAudioBuffer(buffer, { inSec, outSec });
-  if (previousUrl) URL.revokeObjectURL(previousUrl);
-  return URL.createObjectURL(wav);
 }

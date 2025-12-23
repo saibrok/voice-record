@@ -12,26 +12,21 @@
     <div class="field">
       <label for="deviceSelect">Устройство ввода (микрофон)</label>
       <select id="deviceSelect"></select>
-      <div class="hint">
-        Список устройств появляется корректно после первого разрешения на доступ к микрофону.
-      </div>
+      <div class="hint">Список устройств появляется корректно после первого разрешения на доступ к микрофону.</div>
     </div>
 
     <div
       class="row"
       style="margin-top: 10px"
     >
-    <div class="field">
-      <label>Частота записи (Hz)</label>
-      <div class="pill"><b id="preferSRLabel">—</b></div>
-      <div class="hint">Пробуем 48000 → 44100, иначе используем частоту устройства/ОС.</div>
-      <div class="hint">
-        Запрошено: <b id="srRequested">—</b> · Фактически: <b id="srActual">—</b>
+      <div class="field">
+        <label>Частота записи (Hz)</label>
+        <div class="pill"><b id="preferSRLabel">—</b></div>
+        <div class="hint">Запрошено: <b id="srRequested">—</b> · Фактически: <b id="srActual">—</b></div>
       </div>
-    </div>
-    <div class="field">
-      <label for="channels">Каналы</label>
-      <select id="channels">
+      <div class="field">
+        <label for="channels">Каналы</label>
+        <select id="channels">
           <option
             value="1"
             selected
@@ -39,12 +34,9 @@
             Mono (1)
           </option>
           <option value="2">Stereo (2)</option>
-      </select>
-      <div class="hint">Для дикторской записи обычно предпочтительнее Mono.</div>
-      <div class="hint">
-        Запрошено: <b id="chRequested">—</b> · Фактически: <b id="chActual">—</b>
+        </select>
+        <div class="hint">Запрошено: <b id="chRequested">—</b> · Фактически: <b id="chActual">—</b></div>
       </div>
-    </div>
     </div>
 
     <div
@@ -87,7 +79,7 @@
       <div class="field">
         <label>Формат записи</label>
         <div class="pill"><b>PCM/WAV (без сжатия)</b></div>
-        <div class="hint">Запись идёт без сжатия, экспорт — WAV 16-bit.</div>
+        <div class="hint">Запись идёт без сжатия, экспорт — WAV 24-bit.</div>
       </div>
     </div>
 
@@ -96,7 +88,7 @@
         id="btnInit"
         class="primary"
       >
-        1) Инициализировать микрофон
+        Инициализировать микрофон
       </button>
       <button
         id="btnDisable"
@@ -109,7 +101,7 @@
         class="primary"
         disabled
       >
-        2) Начать запись
+        Начать запись
       </button>
       <button
         id="btnStop"
