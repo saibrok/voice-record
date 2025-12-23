@@ -11,10 +11,12 @@
         Mono
       </div>
       <div class="meterBar">
-        <div
-          id="meterFillL"
-          class="meterFill"
-        ></div>
+        <canvas
+          id="meterCanvasL"
+          class="meterCanvas"
+          width="600"
+          height="16"
+        ></canvas>
         <div class="meterTicks">
           <span>-60</span>
           <span>-30</span>
@@ -43,10 +45,12 @@
         R
       </div>
       <div class="meterBar">
-        <div
-          id="meterFillR"
-          class="meterFill"
-        ></div>
+        <canvas
+          id="meterCanvasR"
+          class="meterCanvas"
+          width="600"
+          height="16"
+        ></canvas>
         <div class="meterTicks">
           <span>-60</span>
           <span>-30</span>

@@ -38,8 +38,8 @@ export function setupRecorder() {
     meterLabelL: document.getElementById('meterLabelL'),
     meterLabelR: document.getElementById('meterLabelR'),
     meterRowR: document.getElementById('meterRowR'),
-    meterFillL: document.getElementById('meterFillL'),
-    meterFillR: document.getElementById('meterFillR'),
+    meterCanvasL: document.getElementById('meterCanvasL'),
+    meterCanvasR: document.getElementById('meterCanvasR'),
     meterDbL: document.getElementById('meterDbL'),
     meterDbR: document.getElementById('meterDbR'),
   };
@@ -58,6 +58,10 @@ export function setupRecorder() {
   let meterAnalyserL = null;
   let meterAnalyserR = null;
   let meterChannelCount = 1;
+  let meterPeakL = { value: 0, holdUntil: 0, lastUpdate: 0 };
+  let meterPeakR = { value: 0, holdUntil: 0, lastUpdate: 0 };
+  const METER_HOLD_MS = 1200;
+  const METER_DECAY_PER_MS = 0.26;
 
   let workletNode = null;
   let workletGain = null;
@@ -334,10 +338,12 @@ export function setupRecorder() {
   function resetMeterUI() {
     if (els.meterLabelL) els.meterLabelL.textContent = 'Mono';
     if (els.meterRowR) els.meterRowR.style.display = 'none';
-    if (els.meterFillL) els.meterFillL.style.width = '0%';
-    if (els.meterFillR) els.meterFillR.style.width = '0%';
     if (els.meterDbL) els.meterDbL.textContent = '-inf dB';
     if (els.meterDbR) els.meterDbR.textContent = '-inf dB';
+    meterPeakL = { value: 0, holdUntil: 0, lastUpdate: 0 };
+    meterPeakR = { value: 0, holdUntil: 0, lastUpdate: 0 };
+    renderMeter(els.meterCanvasL, 0, 0);
+    renderMeter(els.meterCanvasR, 0, 0);
   }
 
   function setupMeters(channelCount) {
@@ -365,14 +371,14 @@ export function setupRecorder() {
   }
 
   function updateMeters() {
-    if (!meterAnalyserL || !els.meterFillL || !els.meterDbL) return;
-    updateMeterFromAnalyser(meterAnalyserL, els.meterFillL, els.meterDbL);
-    if (meterChannelCount > 1 && meterAnalyserR && els.meterFillR && els.meterDbR) {
-      updateMeterFromAnalyser(meterAnalyserR, els.meterFillR, els.meterDbR);
+    if (!meterAnalyserL || !els.meterCanvasL || !els.meterDbL) return;
+    updateMeterFromAnalyser(meterAnalyserL, els.meterCanvasL, els.meterDbL, meterPeakL);
+    if (meterChannelCount > 1 && meterAnalyserR && els.meterCanvasR && els.meterDbR) {
+      updateMeterFromAnalyser(meterAnalyserR, els.meterCanvasR, els.meterDbR, meterPeakR);
     }
   }
 
-  function updateMeterFromAnalyser(analyserNode, fillEl, labelEl) {
+  function updateMeterFromAnalyser(analyserNode, canvasEl, labelEl, peakState) {
     const len = analyserNode.fftSize;
     const buf = new Float32Array(len);
     if (analyserNode.getFloatTimeDomainData) {
@@ -391,13 +397,85 @@ export function setupRecorder() {
     const dbClamped = Math.max(-60, Math.min(0, db));
     const percent = ((dbClamped + 60) / 60) * 100;
 
-    let color = '#8cffb3';
-    if (db > -6) color = '#ff6b6b';
-    else if (db > -18) color = '#ffd36b';
-
-    fillEl.style.width = `${percent.toFixed(1)}%`;
-    fillEl.style.backgroundColor = color;
+    updatePeakState(peakState, percent);
+    renderMeter(canvasEl, percent, peakState.value);
     labelEl.textContent = Number.isFinite(db) ? `${db.toFixed(1)} dB` : '-inf dB';
+  }
+
+  function updatePeakState(state, percent) {
+    const now = performance.now();
+    if (percent >= state.value) {
+      state.value = percent;
+      state.holdUntil = now + METER_HOLD_MS;
+      state.lastUpdate = now;
+      return;
+    }
+    if (now < state.holdUntil) {
+      state.lastUpdate = now;
+      return;
+    }
+    const dt = state.lastUpdate ? now - state.lastUpdate : 0;
+    if (dt > 0) {
+      state.value = Math.max(percent, state.value - METER_DECAY_PER_MS * dt);
+      state.lastUpdate = now;
+    }
+  }
+
+  function renderMeter(canvas, percent, peakPercent) {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const greenEnd = 0.7;
+    const yellowEnd = 0.9;
+    const filled = Math.max(0, Math.min(1, percent / 100));
+    const peakX = Math.max(0, Math.min(1, peakPercent / 100)) * w;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Базовый фон
+    ctx.fillStyle = 'rgba(39, 48, 67, 0.6)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Цветные зоны
+    ctx.fillStyle = '#8cffb3';
+    ctx.fillRect(0, 0, w * greenEnd, h);
+    ctx.fillStyle = '#ffd36b';
+    ctx.fillRect(w * greenEnd, 0, w * (yellowEnd - greenEnd), h);
+    ctx.fillStyle = '#ff6b6b';
+    ctx.fillRect(w * yellowEnd, 0, w * (1 - yellowEnd), h);
+
+    // Маска справа от текущего уровня
+    const maskStart = w * filled;
+    if (maskStart < w) {
+      ctx.fillStyle = 'rgba(16, 20, 27, 0.75)';
+      ctx.fillRect(maskStart, 0, w - maskStart, h);
+    }
+
+    // Тики внутри полосы
+    ctx.fillStyle = 'rgba(16, 20, 27, 0.6)';
+    const ticks = [-60, -30, -18, -6, 0];
+    for (const t of ticks) {
+      const x = ((t + 60) / 60) * w;
+      ctx.fillRect(Math.max(0, x - 0.5), 0, 1, h);
+    }
+
+    // Пик
+    ctx.strokeStyle = '#e8edf5';
+    ctx.lineWidth = Math.max(1, dpr);
+    ctx.beginPath();
+    ctx.moveTo(peakX + 0.5, 0);
+    ctx.lineTo(peakX + 0.5, h);
+    ctx.stroke();
   }
 
   function resetPcmState() {
@@ -561,10 +639,7 @@ export function setupRecorder() {
     hideCompat();
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      showCompat(
-        'bad',
-        'Этот браузер не поддерживает getUserMedia(). Нужен современный Chrome/Edge/Firefox/Safari.',
-      );
+      showCompat('bad', 'Этот браузер не поддерживает getUserMedia(). Нужен современный Chrome/Edge/Firefox/Safari.');
       return;
     }
 
