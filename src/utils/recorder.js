@@ -34,6 +34,14 @@ export function setupRecorder() {
 
     compat: document.getElementById('compat'),
     log: document.getElementById('log'),
+
+    meterLabelL: document.getElementById('meterLabelL'),
+    meterLabelR: document.getElementById('meterLabelR'),
+    meterRowR: document.getElementById('meterRowR'),
+    meterFillL: document.getElementById('meterFillL'),
+    meterFillR: document.getElementById('meterFillR'),
+    meterDbL: document.getElementById('meterDbL'),
+    meterDbR: document.getElementById('meterDbR'),
   };
 
   const MODE_PCM = 'pcm';
@@ -45,6 +53,11 @@ export function setupRecorder() {
   let sourceNode = null;
   let analyser = null;
   let rafId = null;
+
+  let meterSplitter = null;
+  let meterAnalyserL = null;
+  let meterAnalyserR = null;
+  let meterChannelCount = 1;
 
   let workletNode = null;
   let workletGain = null;
@@ -213,6 +226,7 @@ export function setupRecorder() {
     }
     ctx.stroke();
 
+    updateMeters();
     rafId = requestAnimationFrame(drawLive);
   }
 
@@ -313,6 +327,77 @@ export function setupRecorder() {
     ctx.clearRect(0, 0, els.scope.width, els.scope.height);
     ctx.fillStyle = 'rgba(16,20,27,0.85)';
     ctx.fillRect(0, 0, els.scope.width, els.scope.height);
+
+    resetMeterUI();
+  }
+
+  function resetMeterUI() {
+    if (els.meterLabelL) els.meterLabelL.textContent = 'Mono';
+    if (els.meterRowR) els.meterRowR.style.display = 'none';
+    if (els.meterFillL) els.meterFillL.style.width = '0%';
+    if (els.meterFillR) els.meterFillR.style.width = '0%';
+    if (els.meterDbL) els.meterDbL.textContent = '-inf dB';
+    if (els.meterDbR) els.meterDbR.textContent = '-inf dB';
+  }
+
+  function setupMeters(channelCount) {
+    if (!audioCtx || !sourceNode) return;
+    meterChannelCount = channelCount;
+
+    meterSplitter = audioCtx.createChannelSplitter(2);
+    meterAnalyserL = audioCtx.createAnalyser();
+    meterAnalyserR = audioCtx.createAnalyser();
+    meterAnalyserL.fftSize = 2048;
+    meterAnalyserR.fftSize = 2048;
+
+    sourceNode.connect(meterSplitter);
+    meterSplitter.connect(meterAnalyserL, 0);
+    if (channelCount > 1) {
+      meterSplitter.connect(meterAnalyserR, 1);
+    }
+
+    if (els.meterLabelL) {
+      els.meterLabelL.textContent = channelCount > 1 ? 'L' : 'Mono';
+    }
+    if (els.meterRowR) {
+      els.meterRowR.style.display = channelCount > 1 ? 'grid' : 'none';
+    }
+  }
+
+  function updateMeters() {
+    if (!meterAnalyserL || !els.meterFillL || !els.meterDbL) return;
+    updateMeterFromAnalyser(meterAnalyserL, els.meterFillL, els.meterDbL);
+    if (meterChannelCount > 1 && meterAnalyserR && els.meterFillR && els.meterDbR) {
+      updateMeterFromAnalyser(meterAnalyserR, els.meterFillR, els.meterDbR);
+    }
+  }
+
+  function updateMeterFromAnalyser(analyserNode, fillEl, labelEl) {
+    const len = analyserNode.fftSize;
+    const buf = new Float32Array(len);
+    if (analyserNode.getFloatTimeDomainData) {
+      analyserNode.getFloatTimeDomainData(buf);
+    } else {
+      const tmp = new Uint8Array(len);
+      analyserNode.getByteTimeDomainData(tmp);
+      for (let i = 0; i < len; i++) buf[i] = (tmp[i] - 128) / 128;
+    }
+
+    let sum = 0;
+    for (let i = 0; i < len; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / len) || 0;
+    const db = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
+
+    const dbClamped = Math.max(-60, Math.min(0, db));
+    const percent = ((dbClamped + 60) / 60) * 100;
+
+    let color = '#8cffb3';
+    if (db > -6) color = '#ff6b6b';
+    else if (db > -18) color = '#ffd36b';
+
+    fillEl.style.width = `${percent.toFixed(1)}%`;
+    fillEl.style.backgroundColor = color;
+    labelEl.textContent = Number.isFinite(db) ? `${db.toFixed(1)} dB` : '-inf dB';
   }
 
   function resetPcmState() {
@@ -360,12 +445,17 @@ export function setupRecorder() {
       } catch {}
       audioCtx = null;
     }
+    meterSplitter = null;
+    meterAnalyserL = null;
+    meterAnalyserR = null;
+    meterChannelCount = 1;
     workletNode = null;
     workletGain = null;
     workletReady = false;
     workletConnected = false;
     resetEditedState();
     resetPcmState();
+    resetMeterUI();
     setStatus('не инициализировано');
     setButtons({ canRecord: false, isRecording: false, hasClip: false });
   }
@@ -501,6 +591,10 @@ export function setupRecorder() {
       } catch {}
       audioCtx = null;
     }
+    meterSplitter = null;
+    meterAnalyserL = null;
+    meterAnalyserR = null;
+    meterChannelCount = 1;
     workletNode = null;
     workletGain = null;
     workletReady = false;
@@ -558,6 +652,8 @@ export function setupRecorder() {
       const track = stream.getAudioTracks()[0];
       const settings = track?.getSettings?.();
       const actualChannels = settings?.channelCount || channelCount;
+
+      setupMeters(actualChannels);
 
       els.sr.textContent = String(audioCtx.sampleRate);
       els.ch.textContent = String(actualChannels);

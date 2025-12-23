@@ -1,4 +1,5 @@
+import { createApp } from 'vue';
+import App from './App.vue';
 import './styles.css';
-import { setupRecorder } from './recorder.js';
 
-setupRecorder();
+createApp(App).mount('#app');
