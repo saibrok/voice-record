@@ -50,7 +50,6 @@
             ><input
               type="checkbox"
               id="ec"
-              checked
             />
             Echo cancellation</label
           ><br />
@@ -58,7 +57,6 @@
             ><input
               type="checkbox"
               id="ns"
-              checked
             />
             Noise suppression</label
           ><br />
@@ -66,20 +64,23 @@
             ><input
               type="checkbox"
               id="agc"
-              checked
             />
             Auto gain control</label
           >
-        </div>
-        <div class="hint">
-          Для диктора обычно лучше выключать EC/NS/AGC (сохраняет естественность и динамику), но это зависит от условий
-          комнаты.
+          <br />
+          <label class="small"
+            ><input
+              type="checkbox"
+              id="vi"
+            />
+            Voice isolation</label
+          >
         </div>
       </div>
       <div class="field">
         <label>Формат записи</label>
         <div class="pill"><b>PCM/WAV (без сжатия)</b></div>
-        <div class="hint">Запись идёт без сжатия, экспорт — WAV 24-bit.</div>
+        <div class="hint">Запись идёт без сжатия, экспорт — WAV 16-bit.</div>
       </div>
     </div>
 
@@ -128,6 +129,11 @@
       class="msg mono"
       style="display: none"
     ></div>
+    <pre
+      id="settings"
+      class="msg mono"
+      style="display: none"
+    ></pre>
   </UiCard>
 </template>
 

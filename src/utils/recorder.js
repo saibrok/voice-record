@@ -17,6 +17,7 @@ export function setupRecorder() {
     ec: document.getElementById('ec'),
     ns: document.getElementById('ns'),
     agc: document.getElementById('agc'),
+    vi: document.getElementById('vi'),
     btnInit: document.getElementById('btnInit'),
     btnDisable: document.getElementById('btnDisable'),
     btnStart: document.getElementById('btnStart'),
@@ -41,6 +42,7 @@ export function setupRecorder() {
 
     compat: document.getElementById('compat'),
     log: document.getElementById('log'),
+    settings: document.getElementById('settings'),
 
     meterLabelL: document.getElementById('meterLabelL'),
     meterLabelR: document.getElementById('meterLabelR'),
@@ -75,7 +77,6 @@ export function setupRecorder() {
   let workletGain = null;
   let workletReady = false;
   let workletConnected = false;
-
 
   let pcmRecording = false;
   let discardOnStop = false;
@@ -120,11 +121,21 @@ export function setupRecorder() {
     els.compat.textContent = '';
   };
 
+  const showSettings = (obj) => {
+    if (!els.settings) return;
+    if (!obj) {
+      els.settings.style.display = 'none';
+      els.settings.textContent = '';
+      return;
+    }
+    els.settings.style.display = 'block';
+    els.settings.textContent = `${JSON.stringify(obj, null, 2)}`;
+  };
+
   function formatSec(sec) {
     if (!Number.isFinite(sec)) return '—';
     return sec.toFixed(2) + 's';
   }
-
 
   async function refreshDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -822,6 +833,7 @@ export function setupRecorder() {
     resetPcmState();
     setRequestActualLabels({ srRequested: '—', srActual: '—', chRequested: '—', chActual: '—' });
     resetMeterUI();
+    showSettings(null);
     setStatus('не инициализировано');
     setButtons({ canRecord: false, isRecording: false, hasClip: false });
     setActiveModule('live');
@@ -990,6 +1002,7 @@ export function setupRecorder() {
         echoCancellation: !!els.ec.checked,
         noiseSuppression: !!els.ns.checked,
         autoGainControl: !!els.agc.checked,
+        voiceIsolation: !!els.vi.checked,
       },
     };
 
@@ -1028,6 +1041,8 @@ export function setupRecorder() {
       if (settings?.channelCount && settings.channelCount !== channelCount) {
         showCompat('warn', `Запрошено каналов: ${channelCount}. Браузер/ОС использует ${settings.channelCount}.`);
       }
+
+      showSettings(settings || {});
 
       const actualSrLabel = actualSR || audioCtx.sampleRate;
       setPreferredSampleRateLabel(actualSrLabel);
@@ -1123,10 +1138,7 @@ export function setupRecorder() {
         applyClipBuffer(merged);
         return;
       }
-      showCompat(
-        'warn',
-        'Нельзя продолжить запись: отличаются каналы или частота. Создан новый клип.',
-      );
+      showCompat('warn', 'Нельзя продолжить запись: отличаются каналы или частота. Создан новый клип.');
       appendBaseBuffer = null;
     }
 
@@ -1333,7 +1345,7 @@ export function setupRecorder() {
     const a = range ? range[0] : 0;
     const b = range ? range[1] : decodedBuffer.duration;
 
-    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b, bitsPerSample: 24 });
+    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b, bitsPerSample: 16 });
     const ts = new Date().toISOString().replaceAll(':', '-').slice(0, 19);
     const filename = `recording_${ts}_${Math.round((b - a) * 100) / 100}s.wav`;
 
