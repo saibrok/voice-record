@@ -14,6 +14,7 @@ export function setupRecorder() {
     channels: document.getElementById('channels'),
     chRequested: document.getElementById('chRequested'),
     chActual: document.getElementById('chActual'),
+    wavBitsLabel: document.getElementById('wavBitsLabel'),
     ec: document.getElementById('ec'),
     ns: document.getElementById('ns'),
     agc: document.getElementById('agc'),
@@ -84,6 +85,7 @@ export function setupRecorder() {
   let pcmFormat = null;
   let totalFrames = 0;
   let appendBaseBuffer = null;
+  let exportBitsPerSample = 16;
 
   let decodedBuffer = null; // AudioBuffer для редактирования/экспорта
   let selection = { has: false, start: 0, end: 0 };
@@ -430,6 +432,15 @@ export function setupRecorder() {
       return;
     }
     els.preferSRLabel.textContent = `${value} Hz`;
+  }
+
+  function setExportBitsLabel(bits) {
+    if (!els.wavBitsLabel) return;
+    if (!bits) {
+      els.wavBitsLabel.textContent = '—';
+      return;
+    }
+    els.wavBitsLabel.textContent = `${bits}-bit`;
   }
 
   function setRequestActualLabels({ srRequested, srActual, chRequested, chActual }) {
@@ -832,6 +843,7 @@ export function setupRecorder() {
     resetEditedState();
     resetPcmState();
     setRequestActualLabels({ srRequested: '—', srActual: '—', chRequested: '—', chActual: '—' });
+    setExportBitsLabel(null);
     resetMeterUI();
     showSettings(null);
     setStatus('не инициализировано');
@@ -991,6 +1003,7 @@ export function setupRecorder() {
     workletConnected = false;
     resetEditedState();
     resetPcmState();
+    setExportBitsLabel(null);
 
     const deviceId = els.deviceSelect.value || undefined;
     const channelCount = Number(els.channels.value) || 1;
@@ -1018,6 +1031,7 @@ export function setupRecorder() {
       const settings = track?.getSettings?.();
       const actualSR = settings?.sampleRate || undefined;
       const requestedSR = result.requestedSampleRate;
+      const actualSampleSize = settings?.sampleSize || undefined;
 
       if (requestedSR && actualSR && requestedSR !== actualSR) {
         showCompat(
@@ -1052,6 +1066,8 @@ export function setupRecorder() {
         chRequested: `${channelCount}`,
         chActual: `${actualChannels}`,
       });
+      exportBitsPerSample = actualSampleSize === 24 ? 24 : 16;
+      setExportBitsLabel(exportBitsPerSample);
 
       setupMeters(actualChannels);
 
@@ -1072,6 +1088,7 @@ export function setupRecorder() {
       setStatus('ошибка');
       showCompat('bad', 'Не удалось получить доступ к микрофону или инициализировать запись.');
       log(e?.message || String(e));
+      setExportBitsLabel(null);
       setButtons({ canRecord: false, isRecording: false, hasClip: false });
     }
   }
@@ -1345,7 +1362,7 @@ export function setupRecorder() {
     const a = range ? range[0] : 0;
     const b = range ? range[1] : decodedBuffer.duration;
 
-    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b, bitsPerSample: 16 });
+    const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b, bitsPerSample: exportBitsPerSample });
     const ts = new Date().toISOString().replaceAll(':', '-').slice(0, 19);
     const filename = `recording_${ts}_${Math.round((b - a) * 100) / 100}s.wav`;
 

@@ -80,7 +80,9 @@
       <div class="field">
         <label>Формат записи</label>
         <div class="pill"><b>PCM/WAV (без сжатия)</b></div>
-        <div class="hint">Запись идёт без сжатия, экспорт — WAV 16-bit.</div>
+        <div class="hint">
+          Запись идёт без сжатия, экспорт — WAV <b id="wavBitsLabel">—</b>.
+        </div>
       </div>
     </div>
 
