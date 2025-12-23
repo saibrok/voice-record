@@ -81,15 +81,6 @@ export function encodeWavFromAudioBuffer(audioBuffer, { inSec, outSec } = {}) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-export async function decodeRecordedBlob(blob) {
-  const arr = await blob.arrayBuffer();
-  // Используем отдельный контекст для декодирования с реальной частотой дискретизации
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const audioBuffer = await ctx.decodeAudioData(arr.slice(0));
-  await ctx.close();
-  return audioBuffer;
-}
-
 export function buildWavUrlFromBuffer(buffer, previousUrl, { inSec = 0, outSec = buffer.duration } = {}) {
   const wav = encodeWavFromAudioBuffer(buffer, { inSec, outSec });
   if (previousUrl) URL.revokeObjectURL(previousUrl);

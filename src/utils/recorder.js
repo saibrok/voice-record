@@ -1,4 +1,4 @@
-import { clamp, decodeRecordedBlob, encodeWavFromAudioBuffer } from './audio.js';
+import { clamp, encodeWavFromAudioBuffer } from './audio.js';
 
 export function setupRecorder() {
   // ---------- DOM-узлы ----------
@@ -8,20 +8,25 @@ export function setupRecorder() {
     ch: document.getElementById('ch'),
     dur: document.getElementById('dur'),
     deviceSelect: document.getElementById('deviceSelect'),
-    preferSR: document.getElementById('preferSR'),
+    preferSRLabel: document.getElementById('preferSRLabel'),
+    srRequested: document.getElementById('srRequested'),
+    srActual: document.getElementById('srActual'),
     channels: document.getElementById('channels'),
+    chRequested: document.getElementById('chRequested'),
+    chActual: document.getElementById('chActual'),
     ec: document.getElementById('ec'),
     ns: document.getElementById('ns'),
     agc: document.getElementById('agc'),
-    recordMode: document.getElementById('recordMode'),
-    mime: document.getElementById('mime'),
     btnInit: document.getElementById('btnInit'),
     btnDisable: document.getElementById('btnDisable'),
     btnStart: document.getElementById('btnStart'),
     btnStop: document.getElementById('btnStop'),
     btnClear: document.getElementById('btnClear'),
 
-    scope: document.getElementById('scope'),
+    liveScope: document.getElementById('liveScope'),
+    editScope: document.getElementById('editScope'),
+    liveModule: document.getElementById('liveModule'),
+    editorModule: document.getElementById('editorModule'),
     vizMode: document.getElementById('vizMode'),
     btnPlay: document.getElementById('btnPlay'),
     btnExportWav: document.getElementById('btnExportWav'),
@@ -44,14 +49,11 @@ export function setupRecorder() {
     meterCanvasR: document.getElementById('meterCanvasR'),
     meterDbL: document.getElementById('meterDbL'),
     meterDbR: document.getElementById('meterDbR'),
-    waveArea: document.getElementById('waveArea'),
+    editWaveArea: document.getElementById('editWaveArea'),
     selHandleL: document.getElementById('selHandleL'),
     selHandleR: document.getElementById('selHandleR'),
     playheadHandle: document.getElementById('playheadHandle'),
   };
-
-  const MODE_PCM = 'pcm';
-  const MODE_COMPRESSED = 'compressed';
 
   // ---------- Состояние ----------
   let stream = null;
@@ -74,9 +76,6 @@ export function setupRecorder() {
   let workletReady = false;
   let workletConnected = false;
 
-  let mediaRecorder = null;
-  let recordedChunks = [];
-  let skipDecodeOnStop = false;
 
   let pcmRecording = false;
   let discardOnStop = false;
@@ -125,60 +124,6 @@ export function setupRecorder() {
     return sec.toFixed(2) + 's';
   }
 
-  function getSupportedMimes() {
-    const candidates = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/ogg',
-      'audio/mp4', // иногда Safari
-    ];
-    const supported = [];
-    if (!('MediaRecorder' in window)) return supported;
-    for (const c of candidates) {
-      try {
-        if (MediaRecorder.isTypeSupported(c)) supported.push(c);
-      } catch {}
-    }
-    // Если ничего не найдено, оставляем пустую опцию (по умолчанию браузера)
-    return supported.length ? supported : [''];
-  }
-
-  function populateMime() {
-    const supported = getSupportedMimes();
-    els.mime.innerHTML = '';
-    const preferred = 'audio/webm;codecs=opus';
-    supported.forEach((m) => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m ? m : '(по умолчанию браузера)';
-      els.mime.appendChild(opt);
-    });
-    if (supported.includes(preferred)) {
-      els.mime.value = preferred;
-    }
-  }
-
-  function updateModeUI() {
-    hideCompat();
-    const mode = els.recordMode.value;
-    const canPcm = 'AudioWorkletNode' in window;
-    const canCompressed = 'MediaRecorder' in window;
-
-    if (mode === MODE_PCM) {
-      els.mime.disabled = true;
-      if (!canPcm) {
-        showCompat('bad', 'AudioWorklet не поддерживается в этом браузере.');
-      }
-      return;
-    }
-
-    els.mime.disabled = false;
-    populateMime();
-    if (!canCompressed) {
-      showCompat('bad', 'MediaRecorder не поддерживается в этом браузере.');
-    }
-  }
 
   async function refreshDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -212,8 +157,8 @@ export function setupRecorder() {
   }
 
   function drawLive() {
-    if (!analyser) return;
-    const canvas = els.scope;
+    if (!analyser || !els.liveScope) return;
+    const canvas = els.liveScope;
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
@@ -262,7 +207,8 @@ export function setupRecorder() {
 
   function drawStaticWave(buffer) {
     if (!buffer) return;
-    const canvas = els.scope;
+    if (!els.editScope) return;
+    const canvas = els.editScope;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -374,14 +320,17 @@ export function setupRecorder() {
     els.vizMode.textContent = 'live';
 
     // Чистим холст
-    const ctx = els.scope.getContext('2d');
-    ctx.clearRect(0, 0, els.scope.width, els.scope.height);
-    ctx.fillStyle = 'rgba(16,20,27,0.85)';
-    ctx.fillRect(0, 0, els.scope.width, els.scope.height);
+    if (els.editScope) {
+      const ctx = els.editScope.getContext('2d');
+      ctx.clearRect(0, 0, els.editScope.width, els.editScope.height);
+      ctx.fillStyle = 'rgba(16,20,27,0.85)';
+      ctx.fillRect(0, 0, els.editScope.width, els.editScope.height);
+    }
 
     resetMeterUI();
     clearSelection();
     setPlayhead(0);
+    setActiveModule('live');
   }
 
   function clearSelection() {
@@ -407,7 +356,7 @@ export function setupRecorder() {
   }
 
   function isRecordingActive() {
-    return pcmRecording || (mediaRecorder && mediaRecorder.state === 'recording');
+    return pcmRecording;
   }
 
   function updateSelectionUI() {
@@ -453,19 +402,44 @@ export function setupRecorder() {
     updateOverlayHandles();
   }
 
+  function setActiveModule(mode) {
+    if (els.liveModule) {
+      els.liveModule.classList.toggle('hidden', mode !== 'live');
+    }
+    if (els.editorModule) {
+      els.editorModule.classList.toggle('hidden', mode !== 'edit');
+    }
+  }
+
+  function setPreferredSampleRateLabel(value) {
+    if (!els.preferSRLabel) return;
+    if (!value) {
+      els.preferSRLabel.textContent = '—';
+      return;
+    }
+    els.preferSRLabel.textContent = `${value} Hz`;
+  }
+
+  function setRequestActualLabels({ srRequested, srActual, chRequested, chActual }) {
+    if (els.srRequested) els.srRequested.textContent = srRequested ?? '—';
+    if (els.srActual) els.srActual.textContent = srActual ?? '—';
+    if (els.chRequested) els.chRequested.textContent = chRequested ?? '—';
+    if (els.chActual) els.chActual.textContent = chActual ?? '—';
+  }
+
   function getCanvasEventInfo(event) {
-    const rect = els.scope.getBoundingClientRect();
+    const rect = els.editScope.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     const duration = decodedBuffer?.duration || 0;
     const innerW = Math.max(1, rect.width - WAVE_PADDING.left - WAVE_PADDING.right);
     const innerX = clamp(x - WAVE_PADDING.left, 0, innerW);
     const t = duration > 0 ? clamp((innerX / innerW) * duration, 0, duration) : 0;
-    return { x, y, t, rect, duration, innerW };
+    return { x, y, t, rect, duration, innerW, innerX };
   }
 
   function startCanvasDrag(event) {
-    if (!decodedBuffer || !els.scope) return;
+    if (!decodedBuffer || !els.editScope) return;
     if (isPlaying) stopPlayback(false);
 
     const info = getCanvasEventInfo(event);
@@ -506,9 +480,13 @@ export function setupRecorder() {
       }
     }
 
-    dragState = { mode: 'create', startTime: info.t, moved: false };
-    setSelection(info.t, info.t);
-    drawStaticWave(decodedBuffer);
+    dragState = {
+      mode: 'create',
+      startTime: info.t,
+      startInnerX: info.innerX,
+      moved: false,
+      started: false,
+    };
   }
 
   function moveCanvasDrag(event) {
@@ -524,6 +502,12 @@ export function setupRecorder() {
       return;
     }
     if (dragState.mode === 'create') {
+      const thresholdPx = 6;
+      const movedPx = Math.abs(info.innerX - dragState.startInnerX);
+      if (!dragState.started && movedPx < thresholdPx) {
+        return;
+      }
+      dragState.started = true;
       setSelection(dragState.startTime, info.t);
       drawStaticWave(decodedBuffer);
       return;
@@ -552,7 +536,6 @@ export function setupRecorder() {
     const range = getSelectionRange();
 
     if (dragState.mode === 'create' && !range) {
-      clearSelection();
       setPlayhead(info.t);
       drawStaticWave(decodedBuffer);
     }
@@ -566,7 +549,7 @@ export function setupRecorder() {
   }
 
   function updateCanvasCursor(event) {
-    if (!decodedBuffer || !els.scope) return;
+    if (!decodedBuffer || !els.editScope) return;
     const info = getCanvasEventInfo(event);
     const dur = decodedBuffer.duration || 1;
     const range = getSelectionRange();
@@ -586,12 +569,13 @@ export function setupRecorder() {
       }
     }
 
-    els.scope.style.cursor = cursor;
+    els.editScope.style.cursor = cursor;
   }
 
   function updateOverlayHandles() {
-    if (!els.waveArea || !decodedBuffer) return;
-    const rect = els.scope.getBoundingClientRect();
+    if (!els.editWaveArea || !els.editScope || !decodedBuffer) return;
+    if (els.editorModule?.classList.contains('hidden')) return;
+    const rect = els.editScope.getBoundingClientRect();
     const innerW = Math.max(1, rect.width - WAVE_PADDING.left - WAVE_PADDING.right);
     const dur = decodedBuffer.duration || 1;
 
@@ -796,8 +780,6 @@ export function setupRecorder() {
     els.btnStart.disabled = !(canRecord && !isRecording);
     els.btnStop.disabled = !isRecording;
     els.btnClear.disabled = !(canRecord || hasClip);
-    els.recordMode.disabled = isRecording;
-    els.mime.disabled = isRecording || els.recordMode.value !== MODE_COMPRESSED;
 
     els.btnPlay.disabled = !hasClip;
     els.btnExportWav.disabled = !hasClip;
@@ -812,13 +794,6 @@ export function setupRecorder() {
     if (pcmRecording) {
       stopRecording({ discard: true });
     }
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      skipDecodeOnStop = true;
-      try {
-        mediaRecorder.stop();
-      } catch {}
-    }
-    mediaRecorder = null;
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
       stream = null;
@@ -840,9 +815,11 @@ export function setupRecorder() {
     workletConnected = false;
     resetEditedState();
     resetPcmState();
+    setRequestActualLabels({ srRequested: '—', srActual: '—', chRequested: '—', chActual: '—' });
     resetMeterUI();
     setStatus('не инициализировано');
     setButtons({ canRecord: false, isRecording: false, hasClip: false });
+    setActiveModule('live');
   }
 
   function handleWorkletMessage(event) {
@@ -917,6 +894,30 @@ export function setupRecorder() {
     }
   }
 
+  async function getUserMediaWithPreferredSampleRates(baseConstraints, preferredRates) {
+    for (const rate of preferredRates) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...baseConstraints.audio,
+            sampleRate: { exact: rate },
+          },
+        });
+        return { stream, requestedSampleRate: rate, usedFallback: false };
+      } catch (e) {
+        const isConstraintError = e?.name === 'OverconstrainedError' || e?.name === 'ConstraintNotSatisfiedError';
+        if (!isConstraintError) throw e;
+      }
+    }
+
+    const result = await getUserMediaWithFallback({
+      audio: {
+        ...baseConstraints.audio,
+      },
+    });
+    return { stream: result.stream, requestedSampleRate: null, usedFallback: result.usedFallback };
+  }
+
   function applyClipBuffer(buffer) {
     decodedBuffer = buffer;
     clearSelection();
@@ -928,7 +929,10 @@ export function setupRecorder() {
     els.dur.textContent = formatSec(dur);
 
     els.vizMode.textContent = 'static';
-    drawStaticWave(decodedBuffer);
+    setActiveModule('edit');
+    requestAnimationFrame(() => {
+      drawStaticWave(decodedBuffer);
+    });
 
     setStatus('готово (клип загружен)');
     setButtons({ canRecord: true, isRecording: false, hasClip: true, hasSelection: false });
@@ -947,13 +951,6 @@ export function setupRecorder() {
     if (pcmRecording) {
       stopRecording({ discard: true });
     }
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      skipDecodeOnStop = true;
-      try {
-        mediaRecorder.stop();
-      } catch {}
-    }
-    mediaRecorder = null;
 
     // Останавливаем старый поток
     if (stream) {
@@ -979,14 +976,12 @@ export function setupRecorder() {
     resetPcmState();
 
     const deviceId = els.deviceSelect.value || undefined;
-    const preferSR = els.preferSR.value ? Number(els.preferSR.value) : undefined;
     const channelCount = Number(els.channels.value) || 1;
 
     const constraints = {
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         channelCount: { ideal: channelCount },
-        sampleRate: preferSR ? { ideal: preferSR } : undefined,
         echoCancellation: !!els.ec.checked,
         noiseSuppression: !!els.ns.checked,
         autoGainControl: !!els.agc.checked,
@@ -995,22 +990,22 @@ export function setupRecorder() {
 
     try {
       setStatus('запрашиваем доступ…');
-      const result = await getUserMediaWithFallback(constraints);
+      const result = await getUserMediaWithPreferredSampleRates(constraints, [48000, 44100]);
       stream = result.stream;
       if (result.usedFallback) {
         showCompat('warn', 'Не удалось применить частоту/каналы. Используются параметры устройства.');
       }
 
-      if (preferSR) {
-        const track = stream.getAudioTracks()[0];
-        const settings = track?.getSettings?.();
-        const actualSR = settings?.sampleRate;
-        if (actualSR && actualSR !== preferSR) {
-          showCompat(
-            'warn',
-            `Запрошенная частота ${preferSR} Hz не применена. Скорее всего в ОС задана другая частота, фактическая запись будет ${actualSR} Hz.`,
-          );
-        }
+      const track = stream.getAudioTracks()[0];
+      const settings = track?.getSettings?.();
+      const actualSR = settings?.sampleRate || undefined;
+      const requestedSR = result.requestedSampleRate;
+
+      if (requestedSR && actualSR && requestedSR !== actualSR) {
+        showCompat(
+          'warn',
+          `Запрошенная частота ${requestedSR} Hz не применена. Скорее всего в ОС задана другая частота, фактическая запись будет ${actualSR} Hz.`,
+        );
       }
 
       // Контекст для визуализации и PCM-режима
@@ -1020,18 +1015,23 @@ export function setupRecorder() {
       analyser.fftSize = 2048;
       sourceNode.connect(analyser);
 
-      if (els.recordMode.value === MODE_PCM) {
-        await ensureWorkletNode();
-        connectWorkletIfNeeded();
-      }
+      await ensureWorkletNode();
+      connectWorkletIfNeeded();
 
-      const track = stream.getAudioTracks()[0];
-      const settings = track?.getSettings?.();
       const actualChannels = settings?.channelCount || channelCount;
 
       if (settings?.channelCount && settings.channelCount !== channelCount) {
         showCompat('warn', `Запрошено каналов: ${channelCount}. Браузер/ОС использует ${settings.channelCount}.`);
       }
+
+      const actualSrLabel = actualSR || audioCtx.sampleRate;
+      setPreferredSampleRateLabel(actualSrLabel);
+      setRequestActualLabels({
+        srRequested: requestedSR ? `${requestedSR} Hz` : '—',
+        srActual: actualSrLabel ? `${actualSrLabel} Hz` : '—',
+        chRequested: `${channelCount}`,
+        chActual: `${actualChannels}`,
+      });
 
       setupMeters(actualChannels);
 
@@ -1041,6 +1041,7 @@ export function setupRecorder() {
       setStatus('готово');
       els.vizMode.textContent = 'live';
       drawLive();
+      setActiveModule('live');
 
       // Заполняем имена устройств после разрешения
       await refreshDevices();
@@ -1059,92 +1060,30 @@ export function setupRecorder() {
   async function startRecording() {
     if (!stream) return;
     if (isPlaying) stopPlayback(false);
-
-    const mode = els.recordMode.value;
-
-    if (mode === MODE_PCM) {
-      if (!audioCtx) return;
-      try {
-        await ensureWorkletNode();
-        connectWorkletIfNeeded();
-      } catch (e) {
-        showCompat('bad', 'AudioWorklet недоступен. Переключись на сжатую запись.');
-        log(e?.message || String(e));
-        return;
-      }
-
-      resetPcmState();
-      pcmRecording = true;
-      discardOnStop = false;
-      workletNode.port.postMessage({ type: 'recording', enabled: true });
-
-      setStatus('запись…');
-      setButtons({ canRecord: true, isRecording: true, hasClip: false });
-      els.vizMode.textContent = 'live';
-      return;
+    if (decodedBuffer) {
+      resetEditedState();
     }
 
-    recordedChunks = [];
-    const mimeType = els.mime.value || undefined;
-
+    if (!audioCtx) return;
     try {
-      mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      await ensureWorkletNode();
+      connectWorkletIfNeeded();
     } catch (e) {
-      console.error(e);
-      showCompat('bad', 'Не удалось создать MediaRecorder с выбранным mimeType. Попробуй другой вариант кодека.');
-      return;
-    }
-
-    mediaRecorder.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
-    };
-
-    mediaRecorder.onerror = (ev) => {
-      console.error(ev);
-      showCompat('bad', 'Ошибка MediaRecorder во время записи.');
-    };
-
-    mediaRecorder.onstart = () => {
-      setStatus('запись…');
-      setButtons({ canRecord: true, isRecording: true, hasClip: false });
-      els.vizMode.textContent = 'live';
-    };
-
-    mediaRecorder.onstop = async () => {
-      if (skipDecodeOnStop) {
-        skipDecodeOnStop = false;
-        setStatus(stream ? 'готово' : 'не инициализировано');
-        setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
-        if (analyser) drawLive();
-        return;
-      }
-
-      setStatus('обработка…');
-      setButtons({ canRecord: true, isRecording: false, hasClip: false });
-      stopLiveViz();
-
-      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-
-      try {
-        const buffer = await decodeRecordedBlob(blob);
-        applyClipBuffer(buffer);
-      } catch (e) {
-        console.error(e);
-        setStatus('ошибка');
-        showCompat('bad', 'Не удалось декодировать запись для редактирования. Попробуй другой кодек.');
-        log(e?.message || String(e));
-        setButtons({ canRecord: true, isRecording: false, hasClip: false });
-        if (analyser) drawLive();
-      }
-    };
-
-    try {
-      mediaRecorder.start(250); // чанки каждые 250 мс
-    } catch (e) {
-      console.error(e);
-      showCompat('bad', 'Не удалось стартовать запись.');
+      showCompat('bad', 'AudioWorklet недоступен. Проверь поддержку браузера.');
       log(e?.message || String(e));
+      return;
     }
+
+    resetPcmState();
+    pcmRecording = true;
+    discardOnStop = false;
+    workletNode.port.postMessage({ type: 'recording', enabled: true });
+
+    setStatus('запись…');
+    setButtons({ canRecord: true, isRecording: true, hasClip: false });
+    els.vizMode.textContent = 'live';
+    drawLive();
+    setActiveModule('live');
   }
 
   function finalizePcmRecording() {
@@ -1170,32 +1109,24 @@ export function setupRecorder() {
   }
 
   function stopRecording({ discard = false } = {}) {
-    const mode = els.recordMode.value;
+    if (!pcmRecording) return;
+    pcmRecording = false;
+    discardOnStop = discard;
+    workletNode?.port.postMessage({ type: 'recording', enabled: false });
 
-    if (mode === MODE_PCM) {
-      if (!pcmRecording) return;
-      pcmRecording = false;
-      discardOnStop = discard;
-      workletNode?.port.postMessage({ type: 'recording', enabled: false });
-
-      if (discardOnStop) {
-        discardOnStop = false;
-        resetPcmState();
-        setStatus(stream ? 'готово' : 'не инициализировано');
-        setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
-        if (analyser) drawLive();
-        return;
-      }
-
-      setStatus('обработка…');
-      setButtons({ canRecord: true, isRecording: false, hasClip: false });
-      stopLiveViz();
-      finalizePcmRecording();
+    if (discardOnStop) {
+      discardOnStop = false;
+      resetPcmState();
+      setStatus(stream ? 'готово' : 'не инициализировано');
+      setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
+      if (analyser) drawLive();
       return;
     }
 
-    if (!mediaRecorder) return;
-    if (mediaRecorder.state === 'recording') mediaRecorder.stop();
+    setStatus('обработка…');
+    setButtons({ canRecord: true, isRecording: false, hasClip: false });
+    stopLiveViz();
+    finalizePcmRecording();
   }
 
   // ---------- Редактирование: выделение/удаление/проигрывание ----------
@@ -1330,16 +1261,10 @@ export function setupRecorder() {
   }
 
   // ---------- Привязка интерфейса ----------
-  updateModeUI();
-
   // Первичный список устройств (названия могут быть пустыми до разрешения)
   if (navigator.mediaDevices?.enumerateDevices) {
     refreshDevices().catch(() => {});
   }
-
-  els.recordMode.addEventListener('change', () => {
-    updateModeUI();
-  });
 
   els.btnInit.addEventListener('click', initMic);
   els.btnDisable.addEventListener('click', disableMic);
@@ -1355,16 +1280,12 @@ export function setupRecorder() {
     if (pcmRecording) {
       stopRecording({ discard: true });
     }
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      skipDecodeOnStop = true;
-      try {
-        mediaRecorder.stop();
-      } catch {}
-    }
-    mediaRecorder = null;
     setStatus(stream ? 'готово' : 'не инициализировано');
     if (analyser) drawLive();
     setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
+    if (stream) {
+      setActiveModule('live');
+    }
   });
 
   els.btnPlay.addEventListener('click', playSelectionOrFromPlayhead);
@@ -1391,13 +1312,32 @@ export function setupRecorder() {
 
   els.btnDelete.addEventListener('click', deleteSelection);
 
-  if (els.scope) {
-    els.scope.addEventListener('mousedown', startCanvasDrag);
-    els.scope.addEventListener('mousemove', updateCanvasCursor);
-    window.addEventListener('mousemove', moveCanvasDrag);
-    window.addEventListener('mouseup', endCanvasDrag);
-    els.scope.addEventListener('mouseleave', endCanvasDrag);
-  }
+  const bindPointerDrag = (target) => {
+    if (!target) return;
+    target.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'touch') {
+        event.preventDefault();
+      }
+      target.setPointerCapture?.(event.pointerId);
+      startCanvasDrag(event);
+    });
+    target.addEventListener('pointermove', (event) => {
+      updateCanvasCursor(event);
+      moveCanvasDrag(event);
+    });
+    target.addEventListener('pointerup', (event) => {
+      endCanvasDrag(event);
+      target.releasePointerCapture?.(event.pointerId);
+    });
+    target.addEventListener('pointercancel', (event) => {
+      endCanvasDrag(event);
+      target.releasePointerCapture?.(event.pointerId);
+    });
+    target.addEventListener('pointerleave', endCanvasDrag);
+  };
+
+  bindPointerDrag(els.editScope);
+  bindPointerDrag(els.playheadHandle);
   window.addEventListener('keydown', handleKeyDown);
 
   // Реакция на смену устройства (нужна повторная инициализация)
@@ -1413,10 +1353,12 @@ export function setupRecorder() {
   });
 
   // Подсказки совместимости
-  if (!('AudioWorkletNode' in window) && !('MediaRecorder' in window)) {
-    showCompat('bad', 'Этот браузер не поддерживает AudioWorklet и MediaRecorder.');
+  if (!('AudioWorkletNode' in window)) {
+    showCompat('bad', 'AudioWorklet не поддерживается в этом браузере.');
     setStatus('несовместимо');
   } else {
     setStatus('не инициализировано');
   }
+
+  setActiveModule('live');
 }

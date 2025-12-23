@@ -149,6 +149,7 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0;
+  touch-action: none;
 }
 .selHandle {
   position: absolute;
@@ -191,6 +192,8 @@ button:disabled {
   display: flex;
   justify-content: center;
   align-items: center;
+  pointer-events: auto;
+  cursor: grab;
 
   &::before,
   &::after {
@@ -220,6 +223,9 @@ button:disabled {
 }
 .waveCanvas {
   cursor: crosshair;
+}
+.hidden {
+  display: none;
 }
 .waveCanvas {
   width: 100%;

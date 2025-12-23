@@ -21,28 +21,17 @@
       class="row"
       style="margin-top: 10px"
     >
-      <div class="field">
-        <label for="preferSR">Желаемая частота (Hz)</label>
-        <select id="preferSR">
-          <option value="">По умолчанию устройства</option>
-          <option value="8000">8000</option>
-          <option value="16000">16000</option>
-          <option value="22050">22050</option>
-          <option value="32000">32000</option>
-          <option value="44100">44100</option>
-          <option
-            value="48000"
-            selected
-          >
-            48000
-          </option>
-          <option value="96000">96000</option>
-        </select>
-        <div class="hint">Фактическая частота зависит от устройства/ОС/браузера; будет показана сверху.</div>
+    <div class="field">
+      <label>Частота записи (Hz)</label>
+      <div class="pill"><b id="preferSRLabel">—</b></div>
+      <div class="hint">Пробуем 48000 → 44100, иначе используем частоту устройства/ОС.</div>
+      <div class="hint">
+        Запрошено: <b id="srRequested">—</b> · Фактически: <b id="srActual">—</b>
       </div>
-      <div class="field">
-        <label for="channels">Каналы</label>
-        <select id="channels">
+    </div>
+    <div class="field">
+      <label for="channels">Каналы</label>
+      <select id="channels">
           <option
             value="1"
             selected
@@ -50,9 +39,12 @@
             Mono (1)
           </option>
           <option value="2">Stereo (2)</option>
-        </select>
-        <div class="hint">Для дикторской записи обычно предпочтительнее Mono.</div>
+      </select>
+      <div class="hint">Для дикторской записи обычно предпочтительнее Mono.</div>
+      <div class="hint">
+        Запрошено: <b id="chRequested">—</b> · Фактически: <b id="chActual">—</b>
       </div>
+    </div>
     </div>
 
     <div
@@ -93,28 +85,9 @@
         </div>
       </div>
       <div class="field">
-        <label for="recordMode">Режим записи</label>
-        <select id="recordMode">
-          <option
-            value="pcm"
-            selected
-          >
-            PCM/WAV (без сжатия)
-          </option>
-          <option value="compressed">Сжатая (MediaRecorder)</option>
-        </select>
-        <div class="hint">PCM даёт максимальное качество, но занимает больше памяти.</div>
-      </div>
-    </div>
-
-    <div
-      class="row"
-      style="margin-top: 10px"
-    >
-      <div class="field">
-        <label for="mime">Кодек (только для MediaRecorder)</label>
-        <select id="mime"></select>
-        <div class="hint">Для сравнения качества можно выбрать Opus/OGG/WebM.</div>
+        <label>Формат записи</label>
+        <div class="pill"><b>PCM/WAV (без сжатия)</b></div>
+        <div class="hint">Запись идёт без сжатия, экспорт — WAV 16-bit.</div>
       </div>
     </div>
 

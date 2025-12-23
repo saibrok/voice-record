@@ -1,7 +1,7 @@
 <template>
   <div class="canvasWrap">
     <div
-      id="waveArea"
+      id="editWaveArea"
       class="waveArea"
     >
       <div
@@ -20,7 +20,7 @@
         aria-hidden="true"
       ></div>
       <canvas
-        id="scope"
+        id="editScope"
         class="waveCanvas"
         width="1200"
         height="240"
