@@ -32,7 +32,7 @@
         color: var(--text);
       }
       .wrap {
-        max-width: 1100px;
+        max-width: 1400px;
         margin: 0 auto;
         padding: 20px;
       }
@@ -44,7 +44,7 @@
       }
       .grid {
         display: grid;
-        grid-template-columns: 420px 1fr;
+        grid-template-columns: 620px 1fr;
         gap: 14px;
         align-items: start;
       }
@@ -244,13 +244,16 @@
             >
               <div class="field">
                 <label for="preferSR">Желаемая частота (Hz)</label>
-                <input
-                  id="preferSR"
-                  type="number"
-                  min="8000"
-                  step="1000"
-                  value="48000"
-                />
+                <select id="preferSR">
+                  <option value="">По умолчанию устройства</option>
+                  <option value="8000">8000</option>
+                  <option value="16000">16000</option>
+                  <option value="22050">22050</option>
+                  <option value="32000">32000</option>
+                  <option value="44100">44100</option>
+                  <option value="48000" selected>48000</option>
+                  <option value="96000">96000</option>
+                </select>
                 <div class="hint">Фактическая частота зависит от устройства/ОС/браузера; будет показана сверху.</div>
               </div>
               <div class="field">
@@ -320,6 +323,12 @@
                 class="primary"
               >
                 1) Инициализировать микрофон
+              </button>
+              <button
+                id="btnDisable"
+                disabled
+              >
+                Отключить микрофон
               </button>
               <button
                 id="btnStart"
@@ -463,6 +472,7 @@
           agc: document.getElementById('agc'),
           mime: document.getElementById('mime'),
           btnInit: document.getElementById('btnInit'),
+          btnDisable: document.getElementById('btnDisable'),
           btnStart: document.getElementById('btnStart'),
           btnStop: document.getElementById('btnStop'),
           btnClear: document.getElementById('btnClear'),
@@ -493,6 +503,7 @@
 
         let decodedBuffer = null; // AudioBuffer for editing/export
         let playbackUrl = null;
+        let skipDecodeOnStop = false;
 
         // ---------- Utils ----------
         const log = (s) => {
@@ -542,6 +553,14 @@
         }
 
         async function refreshDevices() {
+          if (!navigator.mediaDevices?.enumerateDevices) {
+            els.deviceSelect.innerHTML = '';
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = 'Список устройств недоступен';
+            els.deviceSelect.appendChild(opt);
+            return;
+          }
           const devices = await navigator.mediaDevices.enumerateDevices();
           const inputs = devices.filter((d) => d.kind === 'audioinput');
           els.deviceSelect.innerHTML = '';
@@ -828,6 +847,7 @@
 
         function setButtons({ initReady = false, canRecord = false, isRecording = false, hasClip = false }) {
           els.btnInit.disabled = false;
+          els.btnDisable.disabled = !canRecord;
           els.btnStart.disabled = !(canRecord && !isRecording);
           els.btnStop.disabled = !isRecording;
           els.btnClear.disabled = !(canRecord || hasClip);
@@ -839,16 +859,60 @@
           els.btnCut.disabled = !hasClip;
         }
 
+        async function disableMic() {
+          hideCompat();
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try {
+              skipDecodeOnStop = true;
+              mediaRecorder.stop();
+            } catch {}
+          }
+          mediaRecorder = null;
+          if (stream) {
+            stream.getTracks().forEach((t) => t.stop());
+            stream = null;
+          }
+          stopLiveViz();
+          if (audioCtx) {
+            try {
+              await audioCtx.close();
+            } catch {}
+            audioCtx = null;
+          }
+          resetEditedState();
+          setStatus('не инициализировано');
+          setButtons({ canRecord: false, isRecording: false, hasClip: false });
+        }
+
+        async function getUserMediaWithFallback(constraints) {
+          try {
+            return { stream: await navigator.mediaDevices.getUserMedia(constraints), usedFallback: false };
+          } catch (e) {
+            const isConstraintError = e?.name === 'OverconstrainedError' || e?.name === 'ConstraintNotSatisfiedError';
+            if (!isConstraintError) throw e;
+
+            // Ослабляем требования по частоте/каналам, если устройство их не поддерживает
+            const relaxed = { audio: { ...constraints.audio } };
+            delete relaxed.audio.sampleRate;
+            delete relaxed.audio.channelCount;
+            return { stream: await navigator.mediaDevices.getUserMedia(relaxed), usedFallback: true };
+          }
+        }
+
         // ---------- Init: mime options ----------
         function populateMime() {
           const supported = getSupportedMimes();
           els.mime.innerHTML = '';
+          const preferred = 'audio/webm;codecs=opus';
           supported.forEach((m) => {
             const opt = document.createElement('option');
             opt.value = m;
             opt.textContent = m ? m : '(по умолчанию браузера)';
             els.mime.appendChild(opt);
           });
+          if (supported.includes(preferred)) {
+            els.mime.value = preferred;
+          }
         }
 
         // ---------- Core: mic init ----------
@@ -882,14 +946,14 @@
           resetEditedState();
 
           const deviceId = els.deviceSelect.value || undefined;
-          const preferSR = Number(els.preferSR.value) || 48000;
+          const preferSR = els.preferSR.value ? Number(els.preferSR.value) : undefined;
           const channelCount = Number(els.channels.value) || 1;
 
           const constraints = {
             audio: {
               deviceId: deviceId ? { exact: deviceId } : undefined,
-              channelCount,
-              sampleRate: preferSR,
+              channelCount: { ideal: channelCount },
+              sampleRate: preferSR ? { ideal: preferSR } : undefined,
               echoCancellation: !!els.ec.checked,
               noiseSuppression: !!els.ns.checked,
               autoGainControl: !!els.agc.checked,
@@ -898,7 +962,23 @@
 
           try {
             setStatus('запрашиваем доступ…');
-            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            const result = await getUserMediaWithFallback(constraints);
+            stream = result.stream;
+            if (result.usedFallback) {
+              showCompat('warn', 'Не удалось применить частоту/каналы. Используются параметры устройства.');
+            }
+
+            if (preferSR) {
+              const track = stream.getAudioTracks()[0];
+              const settings = track?.getSettings?.();
+              const actualSR = settings?.sampleRate;
+              if (actualSR && actualSR !== preferSR) {
+                showCompat(
+                  'warn',
+                  `Запрошенная частота ${preferSR} Hz не поддерживается. Используется ${actualSR} Hz.`,
+                );
+              }
+            }
 
             // Build AudioContext for live visualization
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -961,6 +1041,14 @@
           };
 
           mediaRecorder.onstop = async () => {
+            if (skipDecodeOnStop) {
+              skipDecodeOnStop = false;
+              setStatus(stream ? 'готово' : 'не инициализировано');
+              setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
+              if (analyser) drawLive();
+              return;
+            }
+
             setStatus('обработка…');
             setButtons({ canRecord: true, isRecording: false, hasClip: false });
             stopLiveViz();
@@ -1098,6 +1186,7 @@
         }
 
         els.btnInit.addEventListener('click', initMic);
+        els.btnDisable.addEventListener('click', disableMic);
         els.btnStart.addEventListener('click', startRecording);
         els.btnStop.addEventListener('click', stopRecording);
 
@@ -1107,6 +1196,7 @@
           recordedChunks = [];
           if (mediaRecorder && mediaRecorder.state === 'recording') {
             try {
+              skipDecodeOnStop = true;
               mediaRecorder.stop();
             } catch {}
           }
