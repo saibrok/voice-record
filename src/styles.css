@@ -144,11 +144,87 @@ button:disabled {
 .canvasWrap {
   padding: 14px;
 }
-canvas {
+.waveArea {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0;
+}
+.selHandle {
+  position: absolute;
+  border-radius: 0 4px 4px 0;
+  background: rgb(0, 115, 168);
+  pointer-events: none;
+
+  &::before,
+  &::after {
+    content: '';
+    display: block;
+    width: 2px;
+    height: 10px;
+    background-color: #fff;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  &::before {
+    left: 65%;
+  }
+
+  &::after {
+    left: 35%;
+  }
+}
+.selHandle.left {
+  border-radius: 4px 0 0 4px;
+}
+.playheadHandle {
+  position: absolute;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 5px 5px 20px 20px;
+  background: rgba(255, 107, 107, 0.85);
+  border-color: rgba(255, 107, 107, 0.9);
+  box-shadow: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  &::before,
+  &::after {
+    content: '';
+    display: block;
+    width: 2px;
+    height: 6px;
+    background-color: #fff;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  &::before {
+    left: 65%;
+  }
+
+  &::after {
+    left: 35%;
+  }
+}
+.selHandle {
+  display: none;
+}
+.playheadHandle {
+  display: none;
+}
+.waveCanvas {
+  cursor: crosshair;
+}
+.waveCanvas {
   width: 100%;
   height: 220px;
   background: rgba(16, 20, 27, 0.65);
-  border: 1px solid var(--border);
   border-radius: 14px;
   display: block;
 }

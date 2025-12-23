@@ -1,0 +1,30 @@
+<template>
+  <div class="canvasWrap">
+    <div
+      id="waveArea"
+      class="waveArea"
+    >
+      <div
+        id="selHandleL"
+        class="selHandle"
+        aria-hidden="true"
+      ></div>
+      <div
+        id="selHandleR"
+        class="selHandle"
+        aria-hidden="true"
+      ></div>
+      <div
+        id="playheadHandle"
+        class="playheadHandle"
+        aria-hidden="true"
+      ></div>
+      <canvas
+        id="scope"
+        class="waveCanvas"
+        width="1200"
+        height="240"
+      ></canvas>
+    </div>
+  </div>
+</template>

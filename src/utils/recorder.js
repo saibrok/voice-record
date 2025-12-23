@@ -1,4 +1,4 @@
-import { buildWavUrlFromBuffer, clamp, decodeRecordedBlob, encodeWavFromAudioBuffer } from './audio.js';
+import { clamp, decodeRecordedBlob, encodeWavFromAudioBuffer } from './audio.js';
 
 export function setupRecorder() {
   // ---------- DOM-узлы ----------
@@ -23,14 +23,16 @@ export function setupRecorder() {
 
     scope: document.getElementById('scope'),
     vizMode: document.getElementById('vizMode'),
-    inPoint: document.getElementById('inPoint'),
-    outPoint: document.getElementById('outPoint'),
-    inLabel: document.getElementById('inLabel'),
-    outLabel: document.getElementById('outLabel'),
     btnPlay: document.getElementById('btnPlay'),
     btnExportWav: document.getElementById('btnExportWav'),
-    btnCut: document.getElementById('btnCut'),
-    player: document.getElementById('player'),
+    btnDelete: document.getElementById('btnDelete'),
+
+    selIn: document.getElementById('selIn'),
+    selOut: document.getElementById('selOut'),
+    selInFooter: document.getElementById('selInFooter'),
+    selOutFooter: document.getElementById('selOutFooter'),
+    selLen: document.getElementById('selLen'),
+    playPos: document.getElementById('playPos'),
 
     compat: document.getElementById('compat'),
     log: document.getElementById('log'),
@@ -42,6 +44,10 @@ export function setupRecorder() {
     meterCanvasR: document.getElementById('meterCanvasR'),
     meterDbL: document.getElementById('meterDbL'),
     meterDbR: document.getElementById('meterDbR'),
+    waveArea: document.getElementById('waveArea'),
+    selHandleL: document.getElementById('selHandleL'),
+    selHandleR: document.getElementById('selHandleR'),
+    playheadHandle: document.getElementById('playheadHandle'),
   };
 
   const MODE_PCM = 'pcm';
@@ -79,7 +85,19 @@ export function setupRecorder() {
   let totalFrames = 0;
 
   let decodedBuffer = null; // AudioBuffer для редактирования/экспорта
-  let playbackUrl = null;
+  let selection = { has: false, start: 0, end: 0 };
+  let playheadSec = 0;
+  let dragState = null;
+  let isPlaying = false;
+  let playbackSource = null;
+  let playbackRaf = null;
+  let playbackStartTime = 0;
+  let playbackStartSec = 0;
+  let playbackEndSec = 0;
+
+  const WAVE_PADDING = { left: 18, right: 18, top: 18, bottom: 8 };
+  const HANDLE_GRAB_PX = 12;
+  const HANDLE_WIDTH_PX = 12;
 
   // ---------- Утилиты ----------
   const log = (s) => {
@@ -208,23 +226,31 @@ export function setupRecorder() {
     ctx.fillStyle = 'rgba(16,20,27,0.85)';
     ctx.fillRect(0, 0, w, h);
 
+    const innerW = Math.max(1, w - WAVE_PADDING.left - WAVE_PADDING.right);
+    const innerH = Math.max(1, h - WAVE_PADDING.top - WAVE_PADDING.bottom);
+
+    // Рамка вокруг области волны
+    ctx.strokeStyle = 'rgba(39,48,67,0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(WAVE_PADDING.left, WAVE_PADDING.top, innerW, innerH);
+
     // Линия по центру
     ctx.strokeStyle = 'rgba(39,48,67,0.9)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, h / 2);
-    ctx.lineTo(w, h / 2);
+    ctx.moveTo(WAVE_PADDING.left, WAVE_PADDING.top + innerH / 2);
+    ctx.lineTo(WAVE_PADDING.left + innerW, WAVE_PADDING.top + innerH / 2);
     ctx.stroke();
 
     // Волна
     ctx.strokeStyle = 'rgba(140,255,179,0.95)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    const slice = w / data.length;
+    const slice = innerW / data.length;
     for (let i = 0; i < data.length; i++) {
       const v = data[i] / 128.0; // 0..2
-      const y = (v * h) / 2;
-      const x = i * slice;
+      const y = WAVE_PADDING.top + (v * innerH) / 2;
+      const x = WAVE_PADDING.left + i * slice;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -234,95 +260,116 @@ export function setupRecorder() {
     rafId = requestAnimationFrame(drawLive);
   }
 
-  function drawStaticWave(buffer, inSec, outSec) {
+  function drawStaticWave(buffer) {
+    if (!buffer) return;
     const canvas = els.scope;
     const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
 
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(16,20,27,0.85)';
     ctx.fillRect(0, 0, w, h);
 
-    // Сетка
+    const channelCount = Math.min(2, buffer.numberOfChannels);
+    const innerW = Math.max(1, w - WAVE_PADDING.left - WAVE_PADDING.right);
+    const innerH = Math.max(1, h - WAVE_PADDING.top - WAVE_PADDING.bottom);
+    const segmentH = innerH / channelCount;
+
+    // Рамка вокруг области волны
+    ctx.strokeStyle = 'rgba(39,48,67,0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(WAVE_PADDING.left, WAVE_PADDING.top, innerW, innerH);
+
+    // Линии по центру каналов
     ctx.strokeStyle = 'rgba(39,48,67,0.65)';
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, h / 2);
-    ctx.lineTo(w, h / 2);
-    ctx.stroke();
+    for (let c = 0; c < channelCount; c++) {
+      const y = WAVE_PADDING.top + segmentH * c + segmentH / 2;
+      ctx.beginPath();
+      ctx.moveTo(WAVE_PADDING.left, y);
+      ctx.lineTo(WAVE_PADDING.left + innerW, y);
+      ctx.stroke();
+    }
 
-    if (!buffer) return;
-
-    const ch0 = buffer.getChannelData(0);
-    const len = ch0.length;
-
-    // Пики на пиксель
-    const step = Math.max(1, Math.floor(len / w));
+    // Волны
     ctx.strokeStyle = 'rgba(140,255,179,0.95)';
     ctx.lineWidth = 1;
-    ctx.beginPath();
 
-    for (let x = 0; x < w; x++) {
-      const start = x * step;
-      let min = 1;
-      let max = -1;
-      for (let i = start; i < start + step && i < len; i++) {
-        const v = ch0[i];
-        if (v < min) min = v;
-        if (v > max) max = v;
+    for (let c = 0; c < channelCount; c++) {
+      const data = buffer.getChannelData(c);
+      const len = data.length;
+      const step = Math.max(1, Math.floor(len / innerW));
+      const yCenter = WAVE_PADDING.top + segmentH * c + segmentH / 2;
+      const yScale = segmentH / 2;
+
+      ctx.beginPath();
+      for (let x = 0; x < innerW; x++) {
+        const start = x * step;
+        let min = 1;
+        let max = -1;
+        for (let i = start; i < start + step && i < len; i++) {
+          const v = data[i];
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        const y1 = yCenter - max * yScale;
+        const y2 = yCenter - min * yScale;
+        const drawX = WAVE_PADDING.left + x;
+        ctx.moveTo(drawX, y1);
+        ctx.lineTo(drawX, y2);
       }
-      const y1 = (1 - (max + 1) / 2) * h;
-      const y2 = (1 - (min + 1) / 2) * h;
-      ctx.moveTo(x, y1);
-      ctx.lineTo(x, y2);
+      ctx.stroke();
     }
-    ctx.stroke();
 
     // Подсветка выделения
-    const dur = buffer.duration;
-    const a = clamp(inSec, 0, dur);
-    const b = clamp(outSec, 0, dur);
-    const x1 = Math.floor((Math.min(a, b) / dur) * w);
-    const x2 = Math.floor((Math.max(a, b) / dur) * w);
+    const selRange = getSelectionRange();
+    if (selRange) {
+      const dur = buffer.duration;
+      const [a, b] = selRange;
+      const x1 = Math.floor(WAVE_PADDING.left + (a / dur) * innerW);
+      const x2 = Math.floor(WAVE_PADDING.left + (b / dur) * innerW);
 
-    ctx.fillStyle = 'rgba(255,211,107,0.18)';
-    ctx.fillRect(x1, 0, Math.max(1, x2 - x1), h);
+      ctx.fillStyle = 'rgba(107, 159, 255, 0.1)';
+      ctx.fillRect(x1, WAVE_PADDING.top, Math.max(1, x2 - x1), innerH);
 
-    ctx.strokeStyle = 'rgba(255,211,107,0.6)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x1 + 1, 1, Math.max(1, x2 - x1) - 2, h - 2);
-  }
+      ctx.strokeStyle = 'rgba(107, 159, 255, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x1 + 1, WAVE_PADDING.top + 1, Math.max(1, x2 - x1) - 2, innerH - 2);
+    }
 
-  function updateInOutUI() {
-    if (!decodedBuffer) return;
-    const dur = decodedBuffer.duration;
-    const inV = Number(els.inPoint.value);
-    const outV = Number(els.outPoint.value);
-    els.inLabel.textContent = formatSec(inV);
-    els.outLabel.textContent = formatSec(outV);
-    els.dur.textContent = formatSec(dur);
-    drawStaticWave(decodedBuffer, inV, outV);
+    // Позиция воспроизведения
+    if (Number.isFinite(playheadSec)) {
+      const dur = buffer.duration || 1;
+      const x = Math.floor(WAVE_PADDING.left + (clamp(playheadSec, 0, dur) / dur) * innerW);
+      ctx.strokeStyle = '#ff6b6b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, WAVE_PADDING.top);
+      ctx.lineTo(x + 0.5, WAVE_PADDING.top + innerH);
+      ctx.stroke();
+    }
+
+    updateOverlayHandles();
   }
 
   function resetEditedState() {
+    if (isPlaying) {
+      stopPlayback(true);
+    }
     decodedBuffer = null;
-    els.player.style.display = 'none';
-    if (playbackUrl) URL.revokeObjectURL(playbackUrl);
-    playbackUrl = null;
 
-    els.inPoint.disabled = true;
-    els.outPoint.disabled = true;
     els.btnPlay.disabled = true;
     els.btnExportWav.disabled = true;
-    els.btnCut.disabled = true;
+    els.btnDelete.disabled = true;
 
-    els.inPoint.value = 0;
-    els.outPoint.value = 0;
-    els.inPoint.max = 0;
-    els.outPoint.max = 0;
-    els.inLabel.textContent = '0.00s';
-    els.outLabel.textContent = '0.00s';
     els.dur.textContent = '—';
     els.vizMode.textContent = 'live';
 
@@ -333,6 +380,265 @@ export function setupRecorder() {
     ctx.fillRect(0, 0, els.scope.width, els.scope.height);
 
     resetMeterUI();
+    clearSelection();
+    setPlayhead(0);
+  }
+
+  function clearSelection() {
+    selection = { has: false, start: 0, end: 0 };
+    updateSelectionUI();
+  }
+
+  function setSelection(startSec, endSec) {
+    selection = {
+      has: true,
+      start: clamp(startSec, 0, decodedBuffer?.duration || 0),
+      end: clamp(endSec, 0, decodedBuffer?.duration || 0),
+    };
+    updateSelectionUI();
+  }
+
+  function getSelectionRange() {
+    if (!selection.has) return null;
+    const a = Math.min(selection.start, selection.end);
+    const b = Math.max(selection.start, selection.end);
+    if (Math.abs(b - a) < 0.02) return null;
+    return [a, b];
+  }
+
+  function isRecordingActive() {
+    return pcmRecording || (mediaRecorder && mediaRecorder.state === 'recording');
+  }
+
+  function updateSelectionUI() {
+    const range = getSelectionRange();
+    if (!range) {
+      if (els.selIn) els.selIn.textContent = '—';
+      if (els.selOut) els.selOut.textContent = '—';
+      if (els.selInFooter) els.selInFooter.textContent = '—';
+      if (els.selOutFooter) els.selOutFooter.textContent = '—';
+      if (els.selLen) els.selLen.textContent = '—';
+      setButtons({
+        canRecord: !!stream,
+        isRecording: isRecordingActive(),
+        hasClip: !!decodedBuffer,
+        hasSelection: false,
+      });
+      if (els.selHandleL) els.selHandleL.classList.remove('left');
+      if (els.selHandleR) els.selHandleR.classList.remove('left');
+      updateOverlayHandles();
+      return;
+    }
+    const [a, b] = range;
+    const len = b - a;
+    const inText = formatSec(a);
+    const outText = formatSec(b);
+    if (els.selIn) els.selIn.textContent = inText;
+    if (els.selOut) els.selOut.textContent = outText;
+    if (els.selInFooter) els.selInFooter.textContent = inText;
+    if (els.selOutFooter) els.selOutFooter.textContent = outText;
+    if (els.selLen) els.selLen.textContent = formatSec(len);
+    setButtons({
+      canRecord: !!stream,
+      isRecording: isRecordingActive(),
+      hasClip: !!decodedBuffer,
+      hasSelection: true,
+    });
+    updateOverlayHandles();
+  }
+
+  function setPlayhead(sec) {
+    playheadSec = clamp(sec, 0, decodedBuffer?.duration || 0);
+    if (els.playPos) els.playPos.textContent = formatSec(playheadSec);
+    updateOverlayHandles();
+  }
+
+  function getCanvasEventInfo(event) {
+    const rect = els.scope.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const duration = decodedBuffer?.duration || 0;
+    const innerW = Math.max(1, rect.width - WAVE_PADDING.left - WAVE_PADDING.right);
+    const innerX = clamp(x - WAVE_PADDING.left, 0, innerW);
+    const t = duration > 0 ? clamp((innerX / innerW) * duration, 0, duration) : 0;
+    return { x, y, t, rect, duration, innerW };
+  }
+
+  function startCanvasDrag(event) {
+    if (!decodedBuffer || !els.scope) return;
+    if (isPlaying) stopPlayback(false);
+
+    const info = getCanvasEventInfo(event);
+    const range = getSelectionRange();
+    const dur = decodedBuffer.duration || 1;
+    const playheadX = WAVE_PADDING.left + (playheadSec / dur) * info.innerW;
+    const onHandle = info.y <= WAVE_PADDING.top && Math.abs(info.x - playheadX) <= HANDLE_GRAB_PX;
+    const edgePx = 16;
+
+    if (onHandle) {
+      dragState = { mode: 'scrub', startTime: info.t, moved: false };
+      setPlayhead(info.t);
+      drawStaticWave(decodedBuffer);
+      return;
+    }
+
+    if (range) {
+      const [a, b] = range;
+      const x1 = WAVE_PADDING.left + (a / dur) * info.innerW;
+      const x2 = WAVE_PADDING.left + (b / dur) * info.innerW;
+      if (Math.abs(info.x - x1) <= edgePx) {
+        dragState = { mode: 'resize-left', startSelEnd: b, moved: false };
+        return;
+      }
+      if (Math.abs(info.x - x2) <= edgePx) {
+        dragState = { mode: 'resize-right', startSelStart: a, moved: false };
+        return;
+      }
+      if (info.x >= x1 && info.x <= x2) {
+        dragState = {
+          mode: 'move',
+          startSelStart: a,
+          startSelEnd: b,
+          offset: info.t - a,
+          moved: false,
+        };
+        return;
+      }
+    }
+
+    dragState = { mode: 'create', startTime: info.t, moved: false };
+    setSelection(info.t, info.t);
+    drawStaticWave(decodedBuffer);
+  }
+
+  function moveCanvasDrag(event) {
+    if (!dragState || !decodedBuffer) return;
+    const info = getCanvasEventInfo(event);
+    const dur = decodedBuffer.duration || 0;
+
+    dragState.moved = true;
+
+    if (dragState.mode === 'scrub') {
+      setPlayhead(info.t);
+      drawStaticWave(decodedBuffer);
+      return;
+    }
+    if (dragState.mode === 'create') {
+      setSelection(dragState.startTime, info.t);
+      drawStaticWave(decodedBuffer);
+      return;
+    }
+    if (dragState.mode === 'resize-left') {
+      setSelection(info.t, dragState.startSelEnd);
+      drawStaticWave(decodedBuffer);
+      return;
+    }
+    if (dragState.mode === 'resize-right') {
+      setSelection(dragState.startSelStart, info.t);
+      drawStaticWave(decodedBuffer);
+      return;
+    }
+    if (dragState.mode === 'move') {
+      const length = dragState.startSelEnd - dragState.startSelStart;
+      const newStart = clamp(info.t - dragState.offset, 0, Math.max(0, dur - length));
+      setSelection(newStart, newStart + length);
+      drawStaticWave(decodedBuffer);
+    }
+  }
+
+  function endCanvasDrag(event) {
+    if (!dragState || !decodedBuffer) return;
+    const info = getCanvasEventInfo(event);
+    const range = getSelectionRange();
+
+    if (dragState.mode === 'create' && !range) {
+      clearSelection();
+      setPlayhead(info.t);
+      drawStaticWave(decodedBuffer);
+    }
+
+    if (dragState.mode === 'scrub') {
+      setPlayhead(info.t);
+      drawStaticWave(decodedBuffer);
+    }
+
+    dragState = null;
+  }
+
+  function updateCanvasCursor(event) {
+    if (!decodedBuffer || !els.scope) return;
+    const info = getCanvasEventInfo(event);
+    const dur = decodedBuffer.duration || 1;
+    const range = getSelectionRange();
+    const playheadX = WAVE_PADDING.left + (playheadSec / dur) * info.innerW;
+
+    let cursor = 'crosshair';
+    if (info.y <= WAVE_PADDING.top && Math.abs(info.x - playheadX) <= HANDLE_GRAB_PX) {
+      cursor = 'grab';
+    } else if (range) {
+      const [a, b] = range;
+      const x1 = WAVE_PADDING.left + (a / dur) * info.innerW;
+      const x2 = WAVE_PADDING.left + (b / dur) * info.innerW;
+      if (Math.abs(info.x - x1) <= HANDLE_GRAB_PX || Math.abs(info.x - x2) <= HANDLE_GRAB_PX) {
+        cursor = 'ew-resize';
+      } else if (info.x >= x1 && info.x <= x2) {
+        cursor = 'move';
+      }
+    }
+
+    els.scope.style.cursor = cursor;
+  }
+
+  function updateOverlayHandles() {
+    if (!els.waveArea || !decodedBuffer) return;
+    const rect = els.scope.getBoundingClientRect();
+    const innerW = Math.max(1, rect.width - WAVE_PADDING.left - WAVE_PADDING.right);
+    const dur = decodedBuffer.duration || 1;
+
+    if (els.playheadHandle) {
+      const x = WAVE_PADDING.left + (clamp(playheadSec, 0, dur) / dur) * innerW;
+      els.playheadHandle.style.display = 'block';
+      els.playheadHandle.style.left = `${x - HANDLE_WIDTH_PX / 2}px`;
+    }
+
+    const range = getSelectionRange();
+    if (!range) {
+      if (els.selHandleL) els.selHandleL.style.display = 'none';
+      if (els.selHandleR) els.selHandleR.style.display = 'none';
+      return;
+    }
+    const [a, b] = range;
+    const x1 = WAVE_PADDING.left + (a / dur) * innerW;
+    const x2 = WAVE_PADDING.left + (b / dur) * innerW;
+
+    const handleTop = WAVE_PADDING.top;
+    const handleHeight = Math.max(1, rect.height - WAVE_PADDING.top - WAVE_PADDING.bottom);
+
+    if (els.selHandleL) {
+      els.selHandleL.style.display = 'block';
+      els.selHandleL.style.left = `${x1 - HANDLE_WIDTH_PX}px`;
+      els.selHandleL.style.top = `${handleTop}px`;
+      els.selHandleL.style.height = `${handleHeight}px`;
+      els.selHandleL.style.width = `${HANDLE_WIDTH_PX}px`;
+      els.selHandleL.classList.add('left');
+    }
+    if (els.selHandleR) {
+      els.selHandleR.style.display = 'block';
+      els.selHandleR.style.left = `${x2}px`;
+      els.selHandleR.style.top = `${handleTop}px`;
+      els.selHandleR.style.height = `${handleHeight}px`;
+      els.selHandleR.style.width = `${HANDLE_WIDTH_PX}px`;
+      els.selHandleR.classList.remove('left');
+    }
+  }
+
+  function handleKeyDown(event) {
+    if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
+    if (event.key === 'Delete') {
+      if (getSelectionRange()) {
+        deleteSelection();
+      }
+    }
   }
 
   function resetMeterUI() {
@@ -484,7 +790,7 @@ export function setupRecorder() {
     totalFrames = 0;
   }
 
-  function setButtons({ canRecord = false, isRecording = false, hasClip = false }) {
+  function setButtons({ canRecord = false, isRecording = false, hasClip = false, hasSelection = false }) {
     els.btnInit.disabled = false;
     els.btnDisable.disabled = !canRecord;
     els.btnStart.disabled = !(canRecord && !isRecording);
@@ -493,15 +799,16 @@ export function setupRecorder() {
     els.recordMode.disabled = isRecording;
     els.mime.disabled = isRecording || els.recordMode.value !== MODE_COMPRESSED;
 
-    els.inPoint.disabled = !hasClip;
-    els.outPoint.disabled = !hasClip;
     els.btnPlay.disabled = !hasClip;
     els.btnExportWav.disabled = !hasClip;
-    els.btnCut.disabled = !hasClip;
+    els.btnDelete.disabled = !hasSelection || isRecording;
   }
 
   async function disableMic() {
     hideCompat();
+    if (isPlaying) {
+      stopPlayback(true);
+    }
     if (pcmRecording) {
       stopRecording({ discard: true });
     }
@@ -612,26 +919,20 @@ export function setupRecorder() {
 
   function applyClipBuffer(buffer) {
     decodedBuffer = buffer;
+    clearSelection();
+    setPlayhead(0);
 
     const dur = decodedBuffer.duration;
-    els.inPoint.max = String(dur);
-    els.outPoint.max = String(dur);
-    els.inPoint.value = '0';
-    els.outPoint.value = String(dur);
-
     els.sr.textContent = String(decodedBuffer.sampleRate);
     els.ch.textContent = String(decodedBuffer.numberOfChannels);
     els.dur.textContent = formatSec(dur);
 
     els.vizMode.textContent = 'static';
-    updateInOutUI();
-
-    playbackUrl = buildWavUrlFromBuffer(decodedBuffer, playbackUrl);
-    els.player.src = playbackUrl;
-    els.player.style.display = 'block';
+    drawStaticWave(decodedBuffer);
 
     setStatus('готово (клип загружен)');
-    setButtons({ canRecord: true, isRecording: false, hasClip: true });
+    setButtons({ canRecord: true, isRecording: false, hasClip: true, hasSelection: false });
+    updateOverlayHandles();
   }
 
   // ---------- Инициализация микрофона ----------
@@ -728,6 +1029,10 @@ export function setupRecorder() {
       const settings = track?.getSettings?.();
       const actualChannels = settings?.channelCount || channelCount;
 
+      if (settings?.channelCount && settings.channelCount !== channelCount) {
+        showCompat('warn', `Запрошено каналов: ${channelCount}. Браузер/ОС использует ${settings.channelCount}.`);
+      }
+
       setupMeters(actualChannels);
 
       els.sr.textContent = String(audioCtx.sampleRate);
@@ -753,6 +1058,7 @@ export function setupRecorder() {
   // ---------- Запись ----------
   async function startRecording() {
     if (!stream) return;
+    if (isPlaying) stopPlayback(false);
 
     const mode = els.recordMode.value;
 
@@ -892,31 +1198,30 @@ export function setupRecorder() {
     if (mediaRecorder.state === 'recording') mediaRecorder.stop();
   }
 
-  // ---------- Редактирование: обрезка/вырезание ----------
-  async function playTrim() {
+  // ---------- Редактирование: выделение/удаление/проигрывание ----------
+  async function playSelectionOrFromPlayhead() {
     if (!decodedBuffer) return;
-    const inSec = Number(els.inPoint.value);
-    const outSec = Number(els.outPoint.value);
-    const a = Math.min(inSec, outSec);
-    const b = Math.max(inSec, outSec);
+    if (isPlaying) {
+      stopPlayback(false);
+      return;
+    }
 
-    // Создаем WAV для предпросмотра выделенного участка
-    playbackUrl = buildWavUrlFromBuffer(decodedBuffer, playbackUrl, { inSec: a, outSec: b });
-    els.player.src = playbackUrl;
-    els.player.style.display = 'block';
-    await els.player.play().catch(() => {});
+    const range = getSelectionRange();
+    const start = range ? range[0] : playheadSec;
+    const end = range ? range[1] : decodedBuffer.duration;
+    if (end - start <= 0.02) return;
+
+    startPlayback(start, end);
   }
 
-  async function cutSelectionAndReplace() {
+  function deleteSelection() {
     if (!decodedBuffer) return;
+    const range = getSelectionRange();
+    if (!range) return;
 
+    const [a, b] = range;
     const sr = decodedBuffer.sampleRate;
     const numCh = decodedBuffer.numberOfChannels;
-    const inSec = Number(els.inPoint.value);
-    const outSec = Number(els.outPoint.value);
-    const a = Math.min(inSec, outSec);
-    const b = Math.max(inSec, outSec);
-
     const start = Math.floor(clamp(a, 0, decodedBuffer.duration) * sr);
     const end = Math.floor(clamp(b, 0, decodedBuffer.duration) * sr);
 
@@ -929,41 +1234,99 @@ export function setupRecorder() {
     }
     hideCompat();
 
-    // Создаем новый AudioBuffer
     const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: sr });
     const outBuf = ctx.createBuffer(numCh, newLength, sr);
 
     for (let c = 0; c < numCh; c++) {
       const src = decodedBuffer.getChannelData(c);
       const dst = outBuf.getChannelData(c);
-
-      // копируем [0..start)
       dst.set(src.slice(0, start), 0);
-
-      // копируем [end..]
       dst.set(src.slice(end), start);
     }
 
     decodedBuffer = outBuf;
+    clearSelection();
+    setPlayhead(a);
 
-    const dur = decodedBuffer.duration;
-    els.inPoint.max = String(dur);
-    els.outPoint.max = String(dur);
-    els.inPoint.value = '0';
-    els.outPoint.value = String(dur);
-
-    els.dur.textContent = formatSec(dur);
+    els.dur.textContent = formatSec(decodedBuffer.duration);
     els.vizMode.textContent = 'static';
-    updateInOutUI();
+    drawStaticWave(decodedBuffer);
 
-    playbackUrl = buildWavUrlFromBuffer(decodedBuffer, playbackUrl);
-    els.player.src = playbackUrl;
-    els.player.style.display = 'block';
+    setButtons({
+      canRecord: !!stream,
+      isRecording: false,
+      hasClip: true,
+      hasSelection: false,
+    });
 
-    // Закрываем временный контекст
     try {
-      await ctx.close();
+      ctx.close();
     } catch {}
+  }
+
+  function startPlayback(startSec, endSec) {
+    stopPlayback(true);
+    if (!audioCtx || !decodedBuffer) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+
+    playbackSource = audioCtx.createBufferSource();
+    playbackSource.buffer = decodedBuffer;
+    playbackSource.connect(audioCtx.destination);
+
+    playbackStartTime = audioCtx.currentTime;
+    playbackStartSec = startSec;
+    playbackEndSec = endSec;
+    isPlaying = true;
+
+    playbackSource.onended = () => {
+      if (isPlaying) {
+        stopPlayback(true);
+      }
+    };
+
+    playbackSource.start(0, startSec, endSec - startSec);
+    playbackRaf = requestAnimationFrame(updatePlaybackPosition);
+  }
+
+  function stopPlayback(fromEnded) {
+    if (!isPlaying) return;
+    isPlaying = false;
+
+    if (playbackSource) {
+      playbackSource.onended = null;
+      try {
+        playbackSource.stop();
+      } catch {}
+      playbackSource.disconnect();
+      playbackSource = null;
+    }
+
+    if (playbackRaf) {
+      cancelAnimationFrame(playbackRaf);
+      playbackRaf = null;
+    }
+
+    if (fromEnded && decodedBuffer) {
+      setPlayhead(playbackEndSec);
+    }
+    if (decodedBuffer) {
+      drawStaticWave(decodedBuffer);
+    }
+  }
+
+  function updatePlaybackPosition() {
+    if (!isPlaying || !audioCtx) return;
+    const elapsed = audioCtx.currentTime - playbackStartTime;
+    const pos = playbackStartSec + elapsed;
+    setPlayhead(pos);
+    if (decodedBuffer) drawStaticWave(decodedBuffer);
+    if (pos >= playbackEndSec) {
+      stopPlayback(true);
+      return;
+    }
+    playbackRaf = requestAnimationFrame(updatePlaybackPosition);
   }
 
   // ---------- Привязка интерфейса ----------
@@ -1004,17 +1367,13 @@ export function setupRecorder() {
     setButtons({ canRecord: !!stream, isRecording: false, hasClip: false });
   });
 
-  els.inPoint.addEventListener('input', updateInOutUI);
-  els.outPoint.addEventListener('input', updateInOutUI);
-
-  els.btnPlay.addEventListener('click', playTrim);
+  els.btnPlay.addEventListener('click', playSelectionOrFromPlayhead);
 
   els.btnExportWav.addEventListener('click', () => {
     if (!decodedBuffer) return;
-    const inSec = Number(els.inPoint.value);
-    const outSec = Number(els.outPoint.value);
-    const a = Math.min(inSec, outSec);
-    const b = Math.max(inSec, outSec);
+    const range = getSelectionRange();
+    const a = range ? range[0] : 0;
+    const b = range ? range[1] : decodedBuffer.duration;
 
     const wav = encodeWavFromAudioBuffer(decodedBuffer, { inSec: a, outSec: b });
     const ts = new Date().toISOString().replaceAll(':', '-').slice(0, 19);
@@ -1030,7 +1389,16 @@ export function setupRecorder() {
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   });
 
-  els.btnCut.addEventListener('click', cutSelectionAndReplace);
+  els.btnDelete.addEventListener('click', deleteSelection);
+
+  if (els.scope) {
+    els.scope.addEventListener('mousedown', startCanvasDrag);
+    els.scope.addEventListener('mousemove', updateCanvasCursor);
+    window.addEventListener('mousemove', moveCanvasDrag);
+    window.addEventListener('mouseup', endCanvasDrag);
+    els.scope.addEventListener('mouseleave', endCanvasDrag);
+  }
+  window.addEventListener('keydown', handleKeyDown);
 
   // Реакция на смену устройства (нужна повторная инициализация)
   els.deviceSelect.addEventListener('change', () => {
